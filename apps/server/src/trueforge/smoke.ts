@@ -13,7 +13,7 @@
  *   7. Print the execution trace; exit nonzero on failure.
  */
 import { config } from "../config.js";
-import { startFakeDeviceMcpServer } from "../mcp/fake-device.js";
+import { startFakeDeviceMcpServer, FAKE_MCP_SERVER_NAME } from "../mcp/fake-device.js";
 import { trueForgeClient } from "./client.js";
 import { ensureAgent, registerMcpServer, registerModelProvider } from "./setup.js";
 import { TurnLog } from "./turn-log.js";
@@ -39,21 +39,26 @@ async function main(): Promise<void> {
   console.log("[3] Starting fake Android MCP server");
   const fake = await startFakeDeviceMcpServer({
     host: config.mcpHost,
-    port: config.mcpPort,
+    port: Number.parseInt(process.env.FAKE_MCP_PORT ?? "8811", 10),
   });
   console.log(`    listening on ${fake.url}`);
 
   try {
     console.log("[4] Registering MCP server with TrueForge");
-    await registerMcpServer(fake.url);
+    await registerMcpServer(
+      FAKE_MCP_SERVER_NAME,
+      fake.url,
+      "Simulated Android device for loop verification.",
+    );
 
+    const agentName = `${config.agentName}-fake`;
     console.log("[5] Ensuring agent exists");
-    const agent = await ensureAgent();
-    console.log(`    agent ready: ${agent.name}`);
+    await ensureAgent({ agentName, mcpServerName: FAKE_MCP_SERVER_NAME });
+    console.log(`    agent ready: ${agentName}`);
 
     console.log("[6] Creating session and streaming turn");
     const session = await client.sessions.create({
-      agent: { name: agent.name },
+      agent: { name: agentName },
     });
     const sessionId = session.data.id;
     console.log(`    session ${sessionId}`);

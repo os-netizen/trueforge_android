@@ -15,6 +15,7 @@
 import http from "node:http";
 import { config } from "./config.js";
 import { startFakeDeviceMcpServer } from "./mcp/fake-device.js";
+import { startAndroidToolBridgeMcpServer } from "./mcp/android-tools.js";
 import { DeviceGateway } from "./devices/gateway.js";
 import {
   ActionRisk,
@@ -41,10 +42,19 @@ async function main(): Promise<void> {
   await new Promise<void>((resolve) => server.listen(PORT, "0.0.0.0", resolve));
   console.log(`device gateway listening on ws://0.0.0.0:${PORT}/device`);
 
+  // Real Android Tool Bridge: MCP endpoint backed by connected devices.
+  const bridge = await startAndroidToolBridgeMcpServer({
+    host: config.mcpHost,
+    port: config.mcpPort,
+    logRequests: true,
+    gateway,
+  });
+  console.log(`android tool bridge MCP endpoint: ${bridge.url}`);
+
   if (process.env.RUN_FAKE_MCP === "1") {
     const fake = await startFakeDeviceMcpServer({
       host: config.mcpHost,
-      port: config.mcpPort,
+      port: Number.parseInt(process.env.FAKE_MCP_PORT ?? "8811", 10),
     });
     console.log(`fake device MCP endpoint: ${fake.url}`);
   }

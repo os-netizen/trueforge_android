@@ -119,51 +119,94 @@ class OperatorAccessibilityService : AccessibilityService() {
     fun captureSnapshot(deviceId: String): ScreenSnapshot {
         val root = rootInActiveWindow
             ?: error("No active window; is the service retrieving window content?")
-        val nodes = mutableListOf<SnapNode>()
-        val refs = mutableMapOf<String, AccessibilityNodeInfo>()
 
-        data class Frame(val node: AccessibilityNodeInfo, val parentId: String?)
-
-        val stack = ArrayDeque<Frame>()
-        stack.addFirst(Frame(root, null))
+        // First pass: deterministic DFS pre-order with positional ids.
+        val raw = mutableListOf<RawNode>()
+        val idStack = ArrayDeque<Pair<AccessibilityNodeInfo, String?>>()
+        idStack.addFirst(root to null)
+        val refsById = mutableMapOf<String, AccessibilityNodeInfo>()
         var index = 0
-
-        while (stack.isNotEmpty()) {
-            val frame = stack.removeFirst()
+        while (idStack.isNotEmpty()) {
+            val (node, parentId) = idStack.removeFirst()
             val id = "n${index++}"
-            val rect = Rect().also { frame.node.getBoundsInScreen(it) }
-            nodes.add(
-                SnapNode(
+            val rect = Rect().also { node.getBoundsInScreen(it) }
+            raw.add(
+                RawNode(
                     id = id,
-                    parentId = frame.parentId,
-                    className = frame.node.className?.toString(),
-                    text = frame.node.text?.toString(),
-                    contentDescription = frame.node.contentDescription?.toString(),
-                    viewId = frame.node.viewIdResourceName,
+                    parentId = parentId,
+                    className = node.className?.toString(),
+                    text = node.text?.toString(),
+                    contentDescription = node.contentDescription?.toString(),
+                    viewId = node.viewIdResourceName,
                     bounds = listOf(rect.left, rect.top, rect.right, rect.bottom),
-                    clickable = frame.node.isClickable,
-                    longClickable = frame.node.isLongClickable,
-                    editable = frame.node.isEditable,
-                    scrollable = frame.node.isScrollable,
-                    focusable = frame.node.isFocusable,
-                    enabled = frame.node.isEnabled,
-                    selected = frame.node.isSelected,
-                    checked = if (frame.node.isCheckable) frame.node.isChecked else null,
+                    clickable = node.isClickable,
+                    longClickable = node.isLongClickable,
+                    editable = node.isEditable,
+                    scrollable = node.isScrollable,
+                    enabled = node.isEnabled,
                 ),
             )
-            refs[id] = frame.node
-            for (i in frame.node.childCount - 1 downTo 0) {
-                frame.node.getChild(i)?.let { child ->
-                    stack.addFirst(Frame(child, id))
+            refsById[id] = node
+            for (i in node.childCount - 1 downTo 0) {
+                node.getChild(i)?.let { child ->
+                    idStack.addFirst(child to id)
                 }
             }
+        }
+
+        // Second pass (handoff doc section 42): prune unlabeled, non-interactive
+        // containers while keeping ancestors of anything informative. Keeps
+        // snapshots inside model-friendly size limits.
+        val keep = BooleanArray(raw.size)
+        for (i in raw.indices) {
+            val n = raw[i]
+            keep[i] =
+                n.clickable || n.longClickable || n.editable || n.scrollable ||
+                    !n.text.isNullOrEmpty() || !n.contentDescription.isNullOrEmpty()
+        }
+        // Ancestor closure over parentId links.
+        val byId = raw.associateBy { it.id }
+        for (i in raw.indices) {
+            if (!keep[i]) continue
+            var p = raw[i].parentId
+            while (p != null) {
+                val pNode = byId[p] ?: break
+                val pIdx = raw.indexOf(pNode)
+                if (pIdx >= 0 && !keep[pIdx]) keep[pIdx] = true else break
+                p = pNode.parentId
+            }
+        }
+
+        val nodes = mutableListOf<SnapNode>()
+        for (i in raw.indices) {
+            if (!keep[i]) continue
+            val n = raw[i]
+            nodes.add(
+                SnapNode(
+                    id = n.id,
+                    parentId = n.parentId,
+                    className = n.className,
+                    text = n.text,
+                    contentDescription = n.contentDescription,
+                    viewId = n.viewId,
+                    bounds = n.bounds,
+                    clickable = n.clickable,
+                    longClickable = n.longClickable,
+                    editable = n.editable,
+                    scrollable = n.scrollable,
+                    focusable = false,
+                    enabled = n.enabled,
+                    selected = false,
+                    checked = null,
+                ),
+            )
         }
 
         val snapshotId = "snap_${++snapshotSeq}"
         captured = Captured(
             snapshotId = snapshotId,
             foregroundPackage = root.packageName?.toString(),
-            nodeRefs = refs,
+            nodeRefs = refsById,
         )
         return ScreenSnapshot(
             deviceId = deviceId,
@@ -174,6 +217,21 @@ class OperatorAccessibilityService : AccessibilityService() {
             nodes = nodes,
         )
     }
+
+    private data class RawNode(
+        val id: String,
+        val parentId: String?,
+        val className: String?,
+        val text: String?,
+        val contentDescription: String?,
+        val viewId: String?,
+        val bounds: List<Int>,
+        val clickable: Boolean,
+        val longClickable: Boolean,
+        val editable: Boolean,
+        val scrollable: Boolean,
+        val enabled: Boolean,
+    )
 
     suspend fun clickNode(nodeId: String): ActionResult =
         clickLike(nodeId, longPress = false)
@@ -377,8 +435,14 @@ class OperatorAccessibilityService : AccessibilityService() {
         return dispatchGesture(gesture, null, null)
     }
 
-    private suspend fun successWithChange(started: Long): ActionResult =
-        result(started, ActionStatus.SUCCESS, screenChanged = awaitScreenChange(SCREEN_CHANGE_WAIT_MS))
+    private suspend fun successWithChange(started: Long): ActionResult {
+        val changed = awaitScreenChange(SCREEN_CHANGE_WAIT_MS)
+        if (changed) {
+            // Let window transitions settle so the reported package is fresh.
+            kotlinx.coroutines.delay(150)
+        }
+        return result(started, ActionStatus.SUCCESS, screenChanged = changed)
+    }
 
     private fun result(
         started: Long,

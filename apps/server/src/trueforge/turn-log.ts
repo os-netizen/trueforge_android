@@ -34,6 +34,12 @@ export class TurnLog {
       case "tool.approval_required":
         this.emit("APPROVAL REQUIRED");
         break;
+      case "tool.response": {
+        const preview =
+          event.content.length > 160 ? `${event.content.slice(0, 160)}...` : event.content;
+        this.emit(`  <- ${preview}`);
+        break;
+      }
       case "sandbox.created":
         this.emit("SANDBOX CREATED");
         break;
