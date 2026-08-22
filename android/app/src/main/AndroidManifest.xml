@@ -15,6 +15,17 @@
             </intent-filter>
         </activity>
 
+        <receiver
+            android:name=".debug.DebugCommandReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="dev.trueforge.operator.DEBUG_CAPTURE" />
+                <action android:name="dev.trueforge.operator.DEBUG_CLICK" />
+                <action android:name="dev.trueforge.operator.DEBUG_TEXT" />
+                <action android:name="dev.trueforge.operator.DEBUG_GLOBAL" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".accessibility.OperatorAccessibilityService"
             android:exported="false"
