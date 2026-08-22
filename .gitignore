@@ -1,0 +1,33 @@
+# Node
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+npm-debug.log*
+
+# Env and secrets
+.env
+.env.*
+!.env.example
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.aab
+*.keystore
+!debug.keystore
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Evals artifacts (keep committed results/ summaries, ignore bulky raw)
+evals/results/raw/
