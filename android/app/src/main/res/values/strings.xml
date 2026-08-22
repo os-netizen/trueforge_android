@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TrueForge Operator</string>
+    <string name="accessibility_service_label">TrueForge Operator Runtime</string>
+    <string name="accessibility_service_description">Lets the TrueForge agent observe the current screen and perform actions on your behalf. You approve consequential actions and can stop execution at any time.</string>
+</resources>
