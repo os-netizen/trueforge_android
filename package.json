@@ -14,5 +14,8 @@
     "smoke:trueforge": "npm run smoke --workspace @trueforge-android/server",
     "dev:server": "npm run dev --workspace @trueforge-android/server",
     "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
   }
 }

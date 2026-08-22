@@ -26,12 +26,17 @@ import dev.trueforge.operator.accessibility.OperatorAccessibilityService
 import kotlinx.coroutines.launch
 
 /**
- * Milestone 2 developer panel: local accessibility read/act verification.
- * No LLM, no server (handoff doc section 47).
+ * Milestone 3 app surface: connection controls + local dev tools.
  */
 @Composable
 fun OperatorApp(
     serviceRunning: Boolean,
+    serverUrl: String,
+    onServerUrlChange: (String) -> Unit,
+    connectionState: String,
+    connected: Boolean,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
     onCaptureSnapshot: () -> String,
     onClickNode: suspend (String) -> String,
@@ -66,6 +71,35 @@ fun OperatorApp(
                 )
                 OutlinedButton(onClick = onOpenAccessibilitySettings) {
                     Text("Open accessibility settings")
+                }
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    "Agent connection: $connectionState",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = if (connected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.error,
+                )
+                OutlinedTextField(
+                    value = serverUrl,
+                    onValueChange = onServerUrlChange,
+                    label = { Text("bridge server url") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onConnect, enabled = serviceRunning && !connected) {
+                        Text("Connect")
+                    }
+                    OutlinedButton(onClick = onDisconnect, enabled = connected) {
+                        Text("Disconnect")
+                    }
                 }
             }
         }

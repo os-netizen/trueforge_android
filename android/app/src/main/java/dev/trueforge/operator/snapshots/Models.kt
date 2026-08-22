@@ -67,6 +67,15 @@ data class DeviceState(
     val activeTaskId: String? = null,
 )
 
+@Serializable
+data class ScreenshotResult(
+    @SerialName("format") val format: String = "png",
+    /** Base64 encoded PNG bytes. Ephemeral by policy (doc section 34). */
+    @SerialName("dataBase64") val dataBase64: String,
+    @SerialName("width") val width: Int,
+    @SerialName("height") val height: Int,
+)
+
 object WireJson {
     val json: Json = Json {
         encodeDefaults = true
