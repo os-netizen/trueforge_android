@@ -27,7 +27,12 @@ data class SnapNode(
     val enabled: Boolean,
     val selected: Boolean,
     val checked: Boolean?,
+    val actions: List<String> = emptyList(),
+    val range: NodeRange? = null,
 )
+
+@Serializable
+data class NodeRange(val min: Float, val max: Float, val current: Float)
 
 @Serializable
 data class ScreenSnapshot(
@@ -65,15 +70,58 @@ data class DeviceState(
     val accessibilityServiceEnabled: Boolean,
     val lastSnapshotId: String?,
     val activeTaskId: String? = null,
+    val screenInteractive: Boolean,
+    val deviceLocked: Boolean,
+    val keyguardShowing: Boolean,
+    val batteryPercent: Int? = null,
+    val charging: Boolean,
+    val networkValidated: Boolean,
+    val networkMetered: Boolean,
+    val mediaVolume: Int,
+    val mediaVolumeMax: Int,
+)
+
+@Serializable
+data class MediaSessionState(
+    val packageName: String,
+    val title: String? = null,
+    val artist: String? = null,
+    val album: String? = null,
+    val playbackState: String,
+    val positionMs: Long? = null,
+    val durationMs: Long? = null,
+    val supportedActions: List<String> = emptyList(),
+)
+
+@Serializable
+data class MediaState(
+    val available: Boolean,
+    val permissionRequired: Boolean,
+    val sessions: List<MediaSessionState> = emptyList(),
+)
+
+@Serializable
+data class NotificationState(
+    val key: String,
+    val packageName: String,
+    val title: String? = null,
+    val text: String? = null,
+    val postedAt: Long,
+    val ongoing: Boolean,
+    val actions: List<String> = emptyList(),
 )
 
 @Serializable
 data class ScreenshotResult(
     @SerialName("format") val format: String = "png",
-    /** Base64 encoded PNG bytes. Ephemeral by policy (doc section 34). */
+    /** Base64 encoded image bytes. Ephemeral by policy (doc section 34). */
     @SerialName("dataBase64") val dataBase64: String,
+    /** Encoded size, after any downsampling. */
     @SerialName("width") val width: Int,
     @SerialName("height") val height: Int,
+    /** Native capture size, so the server can map image points back to screen coordinates. */
+    @SerialName("sourceWidth") val sourceWidth: Int,
+    @SerialName("sourceHeight") val sourceHeight: Int,
 )
 
 object WireJson {
