@@ -31,3 +31,7 @@ Thumbs.db
 
 # Evals artifacts (keep committed results/ summaries, ignore bulky raw)
 evals/results/raw/
+
+**.txt
+
+/docs
