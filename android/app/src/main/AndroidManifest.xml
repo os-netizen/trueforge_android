@@ -2,9 +2,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 
     <application
         android:label="@string/app_name"
@@ -32,6 +41,14 @@
             </intent-filter>
         </receiver>
 
+        <receiver
+            android:name=".approvals.ApprovalDecisionReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="dev.trueforge.operator.APPROVAL_DECISION" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".accessibility.OperatorAccessibilityService"
             android:exported="false"
@@ -51,6 +68,15 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Maintains the agent connection so the device can execute approved tasks in the background" />
+        </service>
+        <service
+            android:name=".media.OperatorNotificationListenerService"
+            android:exported="true"
+            android:label="TrueForge media access"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
         </service>
 
     </application>
