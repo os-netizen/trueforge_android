@@ -179,11 +179,13 @@
 
   .inspector-tabs {
     height: 52px;
-    justify-content: center;
+    justify-content: flex-start;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
   }
 
   .inspector-tabs button {
-    min-width: 92px;
+    flex: 0 0 92px;
   }
 
   .inspector-scroll {
