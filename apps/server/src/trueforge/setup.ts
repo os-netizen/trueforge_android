@@ -1,5 +1,12 @@
+import { accessSync, constants } from "node:fs";
+import { delimiter, join } from "node:path";
 import type { TrueForgeApi } from "@truefoundry/trueforge-sdk";
 import { config, OPENCODE_GO_BASE_URL, openCodeGoApiKey } from "../config.js";
+import {
+  agentReasoningEffort,
+  REASONING_EFFORTS,
+  type ReasoningEffort,
+} from "./reasoning.js";
 import { trueForgeClient } from "./client.js";
 
 /**
@@ -9,15 +16,57 @@ import { trueForgeClient } from "./client.js";
 export const ANDROID_OPERATOR_INSTRUCTIONS = `You operate a physical Android phone through the connected device tools.
 
 Operating policy:
-1. Observe first: call get_screen before acting. Ground every decision in what you actually see. Snapshot nodes are compact: {id, p:parent id, t:text, d:contentDescription, f:flags (c=clickable, l=long-clickable, e=editable text field, s=scrollable), b:[left,top,right,bottom]}. Absent fields are null.
-2. Node ids are valid ONLY within the snapshot that produced them. If an action returns stale_snapshot, call get_screen again instead of retrying blind.
-3. Action hierarchy: prefer semantic node actions (click_node, set_text). Use scroll, swipe, or tap_coordinates only when no node action applies. global_action covers back/home/recents/notifications. launch_app opens installed packages.
-4. Never assume success. After every meaningful action, observe again and verify progress toward the goal before continuing.
+1. Observe first with get_screen. For a specific target use find_nodes instead of requesting more tree data. Nodes are compact: {id,p,t,d,r:role,v:view id,f:flags,a:actions,rng:[min,max,current],b:bounds}. Responses are deliberately bounded to preserve context.
+2. Node ids are valid ONLY within the snapshot that produced them. Every node action must include that snapshotId. If stale_snapshot is returned, search or observe again instead of retrying blind.
+3. Action hierarchy: prefer semantic node actions (click_node, set_text). For audio/video playback, use get_media_state and media_control; never guess player coordinates or infer playback by comparing UI timestamps. Use scroll, swipe, or tap_coordinates only when no semantic action applies. global_action covers back/home/recents/notifications. launch_app opens installed packages.
+4. Prefer execute_and_observe for navigation and wait_for for asynchronous UI; they avoid race-prone action/poll loops. Verify with the narrowest authoritative tool: get_media_state for playback and get_screen/get_device_state for UI navigation.
 5. Recovery: if observed state does not match expectation, re-observe and classify what changed, then replan. Do not loop. After three failed attempts on the same step, report status honestly and stop.
-6. Approval boundary: consequential external actions - sending messages, sharing or posting content, deleting data, creating public links, changing security-relevant settings - MUST be prepared fully, then presented to the user for explicit approval before commitment. Wait for approval.
+6. Approval boundary: consequential external actions - sending messages, sharing or posting content, deleting data, dismissing others' notifications, creating public links, changing security-relevant settings - MUST be executed through commit_action, never execute_action. Prepare the full action first (navigate, type the draft, stage the attachment), then call commit_action once with a one-sentence intent. commit_action pauses until the user decides. If the user denies, do not retry or route around it with execute_action; explain what was denied and stop that step.
 7. Prohibited entirely: banking and payment apps, financial transfers, authenticator or OTP flows, password managers, attempts to bypass secure windows or app protections.
 8. Navigation, searching within apps, opening apps, and typing drafts are low-risk and allowed without approval.
-9. Finish with a concise report: what was done, how it was verified, final outcome.`;
+9. Finish with a concise report: what was done, how it was verified, final outcome.
+10. Visual navigation isolation: the accessibility tree is your only direct perception path. Never call inspect_screen_visually or capture_screenshot on the main thread. Vision is only a navigation-recovery mechanism: use it when get_screen and find_nodes cannot locate an actionable UI target because the target is drawn, unlabelled, or visually represented. Do not use vision to read, transcribe, summarize, describe, compare, or interpret screen content such as posts, messages, documents, images, charts, or videos. Obtain content from structured accessibility nodes or another authoritative non-visual tool; if those sources do not expose it, report that limitation rather than using vision as OCR. For an eligible navigation problem, create one short-lived sub-agent named "vision-recovery", ask only where the actionable target is on the current screen, receive its compact grounding result, and continue on the main thread.
+11. Vision sub-agent contract: tell every vision-recovery sub-agent that it is a strictly read-only UI-target locator, not a content reader. It may call inspect_screen_visually (preferred because it returns compact grounded JSON) or capture_screenshot only to locate the actionable target named by the parent. It must not transcribe or report unrelated screen content, and must not navigate, scroll, tap, type, launch apps, call execute_action/execute_and_observe/commit_action, or spawn another agent. If the target is not on the current screen, it reports "absent" plus the next navigation step and closes; you perform that step and, if visual localization is still needed on the new screen, spawn a fresh vision-recovery sub-agent. Require exactly one grounding result: snapshotId and nodeId where possible, coordinates only for a genuinely drawn control, or an honest absent/unavailable result. The main agent owns every device action and every approval boundary.
+12. Code Mode: when a task requires the same action against three or more similar targets (dismissing several notifications, collecting items across repeated scrolls, or extracting fields from many nodes), do not loop tool calls one model turn at a time. Write one Python script in the sandbox that chains the android-tool-bridge tools via mcp_client, filters and aggregates in code, and prints only a compact summary (counts, ids acted on, final state). Fetch structured data with get_screen/find_nodes/get_notifications inside the script rather than pasting large observations into it. Do not call inspect_screen_visually or capture_screenshot from Code Mode; eligible visual navigation recovery always uses the short-lived vision-recovery sub-agent described above. commit_action called from a script still pauses for approval - route consequential steps through it exactly as in direct calls, and note that execute_action refuses consequential actions outright, script or not. For a single action, keep using direct tool calls; never use the sandbox decoratively.`;
+
+/**
+ * Whether the standalone runtime can give the agent a sandbox.
+ *
+ * The runtime's own startup probe decides this from the host binaries it needs
+ * for the bubblewrap-isolated local fallback (bwrap, socat, rg, a shell and
+ * python3); it logs "Local sandbox fallback is available" when they are all
+ * present. We mirror that check here rather than smoke-testing a turn on every
+ * run - a turn costs a model call, this costs four stats. SANDBOX_ENABLED
+ * overrides it in both directions (1/true to force on, 0/false to force off),
+ * which is also how a remote Daytona provider would be declared.
+ */
+export function sandboxAvailable(): boolean {
+  if (cachedSandboxAvailable === null) cachedSandboxAvailable = probeSandbox();
+  return cachedSandboxAvailable;
+}
+
+let cachedSandboxAvailable: boolean | null = null;
+
+const SANDBOX_HOST_BINARIES = ["bwrap", "socat", "rg", "python3"];
+
+function probeSandbox(): boolean {
+  const override = process.env.SANDBOX_ENABLED;
+  if (override !== undefined && override !== "") {
+    return override === "1" || override.toLowerCase() === "true";
+  }
+  if (process.platform !== "linux") return false;
+  const pathDirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+  return SANDBOX_HOST_BINARIES.every((binary) =>
+    pathDirs.some((dir) => {
+      try {
+        accessSync(join(dir, binary), constants.X_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    }),
+  );
+}
 
 export async function registerModelProvider(): Promise<void> {
   const client = trueForgeClient();
@@ -26,18 +75,16 @@ export async function registerModelProvider(): Promise<void> {
     name: config.modelProviderName,
     baseUrl: OPENCODE_GO_BASE_URL,
     auth: { apiKey: openCodeGoApiKey() },
-    models: [
-      {
-        name: config.mainModelId,
-        modelId: config.mainModelId,
-        properties: {},
-      },
-      {
-        name: config.visionModelId,
-        modelId: config.visionModelId,
-        properties: {},
-      },
-    ],
+    // Deduped: main and vision default to the same vision-capable model, and
+    // declaring one model twice is not something the provider manifest allows.
+    models: [...new Set([config.mainModelId, config.visionModelId])].map((modelId) => ({
+      name: modelId,
+      modelId,
+      // Declared so the runtime (and its UI) knows an effort may be set on
+      // this provider at all; the upstream endpoint accepts exactly this enum
+      // and rejects anything else, so advertising the full list is honest.
+      properties: { reasoningEfforts: [...REASONING_EFFORTS] as ReasoningEffort[] },
+    })),
   };
   await client.settings.modelProviders.createOrUpdate({ manifest });
 }
@@ -60,24 +107,41 @@ export async function registerMcpServer(
 export interface EnsureAgentOptions {
   agentName: string;
   mcpServerName: string;
+  /** Enables Code Mode. Off by default so the stack never depends on it. */
+  sandbox?: boolean;
+  /** Overrides the live setting; omitted means "whatever is configured now". */
+  reasoningEffort?: ReasoningEffort;
 }
 
 export async function ensureAgent(opts: EnsureAgentOptions): Promise<void> {
   const client = trueForgeClient();
 
   const spec: TrueForgeApi.AgentSpec = {
-    model: { name: `${config.modelProviderName}/${config.mainModelId}` },
+    model: {
+      name: `${config.modelProviderName}/${config.mainModelId}`,
+      // Forwarded to the provider as `reasoning_effort`. Changing it means
+      // replacing this manifest, which is why the reasoning API re-runs
+      // ensureAgent rather than poking the running session.
+      params: { reasoningEffort: opts.reasoningEffort ?? agentReasoningEffort() },
+    },
     instructions: ANDROID_OPERATOR_INSTRUCTIONS,
     mcpServers: [
       {
         name: opts.mcpServerName,
         enableTools: ["@all"],
-        // Tool-level approval gating lands in Milestone 6 via
-        // requireApprovalForTools; navigation stays ungated for now.
-        requireApprovalForTools: [],
+        // Navigation stays ungated; only the consequential commit step pauses.
+        requireApprovalForTools: ["commit_action"],
       },
     ],
-    config: { iterationLimit: 40 },
+    config: {
+      iterationLimit: 40,
+      sandbox: { enabled: opts.sandbox ?? false },
+      // Declared rather than left to the runtime default: visual navigation
+      // recovery is isolated in the vision-recovery sub-agent from item 11.
+      // Sub-agents inherit this agent's model, which is why the main model must
+      // stay vision-capable (see config.ts).
+      dynamicSubAgents: { enabled: true },
+    },
   };
 
   try {

@@ -46,7 +46,15 @@ export const config = {
   mcpPort: Number.parseInt(env("BRIDGE_MCP_PORT", "8791"), 10),
 
   modelProviderName: env("MODEL_PROVIDER_NAME", "opencode-go"),
-  mainModelId: env("MAIN_MODEL_ID", "deepseek-v4-flash"),
+  /**
+   * Vision-capable by default. The text-only `deepseek-v4-flash` rejects an
+   * `image_url` content block outright (`400 Model only supports text input`)
+   * and TrueForge dynamic sub-agents inherit the parent's model, so choosing a
+   * text-only main model would make a vision sub-agent impossible. The two
+   * variants bill the same, so there is no reason to run blind.
+   */
+  mainModelId: env("MAIN_MODEL_ID", "deepseek-v4-flash-vision-exp"),
+  /** Model behind `inspect_screen_visually`. Same family unless overridden. */
   visionModelId: env("VISION_MODEL_ID", "deepseek-v4-flash-vision-exp"),
 
   agentName: env("AGENT_NAME", "android-operator-dev"),

@@ -5,8 +5,12 @@ import {
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { PROTOCOL_VERSION } from "@trueforge-android/protocol";
 import type { Server } from "node:http";
 import { randomUUID } from "node:crypto";
+import { inspectScreenVisually } from "../vision/inspect.js";
+import { frameReference, storeFrame } from "../media/frames.js";
+import type { VisionCaller } from "../vision/client.js";
 
 /**
  * Android Tool Bridge (handoff doc sections 10 and 11).
@@ -19,15 +23,17 @@ import { randomUUID } from "node:crypto";
 export const ANDROID_TOOL_BRIDGE_NAME = "android-tool-bridge";
 
 const DeviceActionSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("click_node"), nodeId: z.string() }),
-  z.object({ type: z.literal("long_click_node"), nodeId: z.string() }),
+  z.object({ type: z.literal("click_node"), snapshotId: z.string(), nodeId: z.string() }),
+  z.object({ type: z.literal("long_click_node"), snapshotId: z.string(), nodeId: z.string() }),
   z.object({
     type: z.literal("set_text"),
+    snapshotId: z.string(),
     nodeId: z.string(),
     text: z.string(),
   }),
   z.object({
     type: z.literal("scroll"),
+    snapshotId: z.string(),
     direction: z.enum(["up", "down", "left", "right"]),
     nodeId: z.string().optional(),
   }),
@@ -46,13 +52,30 @@ const DeviceActionSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("global_action"),
-    action: z.enum(["back", "home", "recents", "notifications"]),
+    action: z.enum([
+      "back", "home", "recents", "notifications", "quick_settings",
+      "power_dialog", "lock_screen", "screenshot", "dpad_up", "dpad_down",
+      "dpad_left", "dpad_right", "dpad_center",
+    ]),
   }),
   z.object({
     type: z.literal("launch_app"),
     packageName: z.string(),
   }),
+  z.object({
+    type: z.literal("media_control"),
+    action: z.enum(["play", "pause", "stop", "next", "previous"]),
+    packageName: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("notification_action"),
+    key: z.string(),
+    action: z.enum(["open", "dismiss", "invoke"]),
+    actionIndex: z.number().int().nonnegative().optional(),
+  }),
 ]);
+
+type DeviceAction = z.infer<typeof DeviceActionSchema>;
 
 export interface DeviceGatewayLike {
   listDevices(): Array<{ deviceId: string }>;
@@ -60,7 +83,28 @@ export interface DeviceGatewayLike {
   sendRequest(
     deviceId: string,
     request: Record<string, unknown>,
+    opts?: { timeoutMs?: number },
   ): Promise<Record<string, unknown>>;
+}
+
+/**
+ * Actions that must not run through the ungated tools.
+ *
+ * Instructions alone stopped being enough once Code Mode landed: a script in
+ * the sandbox can call `execute_action` in a loop without a model turn per
+ * call, so an agent that ignores the operating policy routes around the
+ * approval gate entirely and nothing pauses. Refusing here makes the boundary
+ * structural — the consequential path only exists on `commit_action`, which
+ * TrueForge gates.
+ */
+function assertNotConsequential(action: DeviceAction): void {
+  if (action.type === "notification_action" && action.action !== "open") {
+    throw new Error(
+      `notification_action '${action.action}' is consequential: it acts on someone else's ` +
+      "notification. Call commit_action with a one-sentence intent instead; it pauses for " +
+      "human approval. This also applies to calls made from a sandbox script.",
+    );
+  }
 }
 
 function pickOnlineDevice(gateway: DeviceGatewayLike): string {
@@ -70,12 +114,13 @@ function pickOnlineDevice(gateway: DeviceGatewayLike): string {
 }
 
 const MAX_TEXT_LEN = 80;
-const MAX_NODES = 220;
+const MAX_NODES = 60;
 
 interface RawSnapNode {
   id: string;
   parentId?: string | null;
   className?: string | null;
+  viewId?: string | null;
   text?: string | null;
   contentDescription?: string | null;
   bounds: [number, number, number, number];
@@ -83,6 +128,12 @@ interface RawSnapNode {
   longClickable?: boolean;
   editable?: boolean;
   scrollable?: boolean;
+  focusable?: boolean;
+  enabled?: boolean;
+  selected?: boolean;
+  checked?: boolean | null;
+  actions?: string[];
+  range?: { min: number; max: number; current: number } | null;
 }
 
 interface RawSnapshot {
@@ -123,7 +174,14 @@ export function compactSnapshot(raw: RawSnapshot): Record<string, unknown> {
       if (t != null) o.t = t;
       const d = cap(n.contentDescription);
       if (d != null) o.d = d;
+      if (n.className) o.r = n.className.split(".").at(-1);
+      if (n.viewId) o.v = n.viewId.split(":id/").at(-1);
       if (flags) o.f = flags;
+      if (n.actions?.length) o.a = n.actions;
+      if (n.selected) o.sel = true;
+      if (n.checked != null) o.chk = n.checked;
+      if (n.enabled === false) o.dis = true;
+      if (n.range) o.rng = [n.range.min, n.range.max, n.range.current];
       o.b = n.bounds;
       return o;
     }),
@@ -138,13 +196,67 @@ function unwrap(response: Record<string, unknown>): unknown {
   return response.result;
 }
 
-export function createAndroidToolServer(gateway: DeviceGatewayLike): McpServer {
+function nodeSearchText(node: RawSnapNode): string {
+  return [node.text, node.contentDescription, node.className, node.viewId]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function compactMatch(node: RawSnapNode): Record<string, unknown> {
+  const snapshot: RawSnapshot = {
+    deviceId: "search",
+    snapshotId: "search",
+    packageName: "search",
+    timestamp: 0,
+    nodes: [node],
+  };
+  return (compactSnapshot(snapshot).nodes as Record<string, unknown>[])[0] ?? { id: node.id };
+}
+
+export interface AndroidToolServerOptions {
+  /** Overridden in tests so the vision path runs without a network call. */
+  vision?: VisionCaller;
+}
+
+export function createAndroidToolServer(
+  gateway: DeviceGatewayLike,
+  options: AndroidToolServerOptions = {},
+): McpServer {
   const server = new McpServer(
     { name: ANDROID_TOOL_BRIDGE_NAME, version: "0.1.0" },
     {
       instructions:
         "Generic Android device control. Observe with get_screen before acting; " +
-        "node ids are only valid within the snapshot that produced them.",
+        "node ids are only valid within the snapshot that produced them. Use the " +
+        "media tools for playback state and transport controls instead of UI inference.",
+    },
+  );
+
+  server.registerTool(
+    "get_operator_capabilities",
+    {
+      title: "Get operator capabilities",
+      description:
+        "Preflight the Android operator and report compact response budgets and available " +
+        "control planes. Call once when a task needs media or notifications.",
+      inputSchema: {},
+    },
+    async () => {
+      const deviceId = pickOnlineDevice(gateway);
+      const [device, media, notifications] = await Promise.all([
+        gateway.sendRequest(deviceId, { type: "get_device_state" }),
+        gateway.sendRequest(deviceId, { type: "get_media_state" }),
+        gateway.sendRequest(deviceId, { type: "get_notifications" }),
+      ]);
+      return { content: [{ type: "text", text: JSON.stringify({
+        protocolVersion: PROTOCOL_VERSION,
+        responseBudget: { maxNodes: MAX_NODES, maxSearchResults: 20, targetTokens: 4000 },
+        accessibility: device.ok === true,
+        mediaSessions: media.ok === true,
+        notifications: notifications.ok === true,
+        device: device.result,
+      }) }] };
     },
   );
 
@@ -170,6 +282,47 @@ export function createAndroidToolServer(gateway: DeviceGatewayLike): McpServer {
   );
 
   server.registerTool(
+    "find_nodes",
+    {
+      title: "Find screen nodes",
+      description:
+        "Searches the complete current accessibility tree on the bridge and returns only " +
+        "matching nodes. Prefer this over requesting or scrolling through a large tree. " +
+        "Results are bounded and include the snapshotId required for node actions.",
+      inputSchema: {
+        query: z.string().max(200).optional(),
+        role: z.string().max(80).optional(),
+        action: z.string().max(80).optional(),
+        limit: z.number().int().min(1).max(20).default(10),
+      },
+    },
+    async ({ query, role, action, limit }) => {
+      const deviceId = pickOnlineDevice(gateway);
+      const raw = unwrap(await gateway.sendRequest(deviceId, { type: "get_screen" })) as RawSnapshot;
+      const q = query?.toLowerCase();
+      const r = role?.toLowerCase();
+      const matches = raw.nodes.filter((node) => {
+        if (q && !nodeSearchText(node).includes(q)) return false;
+        if (r && !String(node.className ?? "").toLowerCase().includes(r)) return false;
+        if (action && !node.actions?.includes(action)) return false;
+        return true;
+      });
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            snapshotId: raw.snapshotId,
+            packageName: raw.packageName,
+            totalMatches: matches.length,
+            returned: Math.min(matches.length, limit),
+            nodes: matches.slice(0, limit).map(compactMatch),
+          }),
+        }],
+      };
+    },
+  );
+
+  server.registerTool(
     "execute_action",
     {
       title: "Execute action",
@@ -177,9 +330,42 @@ export function createAndroidToolServer(gateway: DeviceGatewayLike): McpServer {
         "Executes one generic Android action. Prefer semantic node actions against the " +
         "current snapshot (click_node, set_text); use scroll/swipe/tap_coordinates only " +
         "when no node action applies; global_action covers back/home/recents/notifications; " +
-        "launch_app opens an installed package. Returns status, screenChanged, and latency.",
+        "launch_app accepts an installed package name or exact visible app label; media_control uses Android media sessions. " +
+        "Consequential actions are refused here, including dismissing or invoking someone " +
+        "else's notification: use commit_action for those, from a sandbox script too. " +
+        "Returns status, screenChanged, and latency.",
       inputSchema: { action: DeviceActionSchema },
     },
+    async ({ action }) => {
+      assertNotConsequential(action);
+      const deviceId = pickOnlineDevice(gateway);
+      const result = await gateway.sendRequest(deviceId, {
+        type: "execute_action",
+        action,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(unwrap(result)) }] };
+    },
+  );
+
+  server.registerTool(
+    "commit_action",
+    {
+      title: "Commit consequential action",
+      description:
+        "Executes ONE consequential, externally visible Android action: sending a message, " +
+        "sharing or posting content, deleting data or dismissing notifications, creating links, " +
+        "or changing settings. This tool pauses for explicit human approval before executing. " +
+        "Prepare everything first (recipient selected, text typed, attachment staged) using " +
+        "execute_action, then call commit_action exactly once for the final commit step. " +
+        "`intent` must be one plain sentence describing the real-world effect, e.g. " +
+        "\"Send report.pdf to Akash on WhatsApp\" — it is shown verbatim to the user.",
+      inputSchema: {
+        intent: z.string().min(8).max(200),
+        action: DeviceActionSchema,
+      },
+    },
+    // `intent` is deliberately unused at execution time: it exists so the
+    // approval surface can read clean display text off the tool-call arguments.
     async ({ action }) => {
       const deviceId = pickOnlineDevice(gateway);
       const result = await gateway.sendRequest(deviceId, {
@@ -191,33 +377,249 @@ export function createAndroidToolServer(gateway: DeviceGatewayLike): McpServer {
   );
 
   server.registerTool(
-    "capture_screenshot",
+    "execute_and_observe",
     {
-      title: "Capture screenshot",
+      title: "Execute and observe",
       description:
-        "Captures the current screen as an image. Use only when the accessibility tree is " +
-        "insufficient (visual-only content, canvas views). Privacy-sensitive: ephemeral.",
+        "Executes one Android action and atomically returns a bounded post-action screen " +
+        "summary after the UI settles. Prefer this for navigation to reduce races and tool calls.",
+      inputSchema: {
+        action: DeviceActionSchema,
+        settleMs: z.number().int().min(0).max(3000).default(350),
+      },
+    },
+    async ({ action, settleMs }) => {
+      assertNotConsequential(action);
+      const deviceId = pickOnlineDevice(gateway);
+      const actionResult = unwrap(await gateway.sendRequest(deviceId, {
+        type: "execute_action",
+        action,
+      }));
+      if (settleMs > 0) await new Promise((resolve) => setTimeout(resolve, settleMs));
+      const raw = unwrap(await gateway.sendRequest(deviceId, { type: "get_screen" })) as RawSnapshot;
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ action: actionResult, screen: compactSnapshot(raw) }),
+        }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "wait_for",
+    {
+      title: "Wait for Android state",
+      description:
+        "Waits without model polling until a package or node text appears. Returns a small " +
+        "matching result, not repeated screen dumps.",
+      inputSchema: {
+        packageName: z.string().optional(),
+        text: z.string().max(200).optional(),
+        timeoutMs: z.number().int().min(100).max(15000).default(5000),
+        pollMs: z.number().int().min(100).max(2000).default(300),
+      },
+    },
+    async ({ packageName, text: wantedText, timeoutMs, pollMs }) => {
+      if (!packageName && !wantedText) throw new Error("packageName or text is required");
+      const deviceId = pickOnlineDevice(gateway);
+      const deadline = Date.now() + timeoutMs;
+      let last: RawSnapshot | null = null;
+      while (Date.now() <= deadline) {
+        last = unwrap(await gateway.sendRequest(deviceId, { type: "get_screen" })) as RawSnapshot;
+        const packageOk = !packageName || last.packageName === packageName;
+        const match = wantedText
+          ? last.nodes.find((node) => nodeSearchText(node).includes(wantedText.toLowerCase()))
+          : undefined;
+        if (packageOk && (!wantedText || match)) {
+          return { content: [{ type: "text", text: JSON.stringify({
+            matched: true,
+            snapshotId: last.snapshotId,
+            packageName: last.packageName,
+            node: match ? compactMatch(match) : undefined,
+          }) }] };
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollMs));
+      }
+      return { content: [{ type: "text", text: JSON.stringify({
+        matched: false,
+        snapshotId: last?.snapshotId,
+        packageName: last?.packageName,
+        timeoutMs,
+      }) }] };
+    },
+  );
+
+  server.registerTool(
+    "get_media_state",
+    {
+      title: "Get media state",
+      description:
+        "Returns active Android media sessions with authoritative playback state, metadata, " +
+        "position, duration, and supported transport actions. Use this to verify play/pause; " +
+        "do not infer playback from screenshots or timestamp nodes. If available=false, the " +
+        "operator app needs notification-listener access enabled once in Android settings.",
       inputSchema: {},
     },
     async () => {
       const deviceId = pickOnlineDevice(gateway);
+      const response = await gateway.sendRequest(deviceId, { type: "get_media_state" });
+      // Preserve a structured unavailable result so the model sees the exact remediation.
+      const result = response.result ?? {
+        available: false,
+        permissionRequired: true,
+        sessions: [],
+        error: response.error,
+      };
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    },
+  );
+
+  server.registerTool(
+    "get_notifications",
+    {
+      title: "Get notifications",
+      description:
+        "Returns a bounded summary of active Android notifications and their semantic actions. " +
+        "Use notification_action through execute_action to open, dismiss, or invoke one.",
+      inputSchema: { limit: z.number().int().min(1).max(30).default(15) },
+    },
+    async ({ limit }) => {
+      const deviceId = pickOnlineDevice(gateway);
+      const response = await gateway.sendRequest(deviceId, { type: "get_notifications" });
+      const result = response.result;
+      if (!Array.isArray(result)) {
+        return { content: [{ type: "text", text: JSON.stringify({
+          available: false,
+          permissionRequired: true,
+          notifications: [],
+        }) }] };
+      }
+      return { content: [{ type: "text", text: JSON.stringify({
+        available: true,
+        total: result.length,
+        notifications: result.slice(0, limit),
+      }) }] };
+    },
+  );
+
+  server.registerTool(
+    "capture_screenshot",
+    {
+      title: "Capture screenshot",
+      description:
+        "Returns the current screen as an image. This puts a full frame into the calling " +
+        "context and is deliberately expensive: do NOT call it on the main thread, and it is " +
+        "useless from a sandbox script (a script cannot look at pixels). It exists for a " +
+        "vision-recovery sub-agent locating an actionable UI target in its isolated context. " +
+        "It is not an OCR, transcription, content-reading, or image-description tool. Main " +
+        "agents must delegate eligible visual navigation and must never call this directly. " +
+        "A vision-recovery sub-agent should prefer inspect_screen_visually when its compact " +
+        "grounded JSON can answer the question. Privacy-sensitive: the " +
+        "image is never written to disk (it is held briefly in memory so the operator's " +
+        "dashboard can show what you looked at), and secure windows are blocked by Android.",
+      inputSchema: {
+        maxDimension: z
+          .number()
+          .int()
+          .min(256)
+          .max(2048)
+          .default(1024)
+          .describe("Longest edge in pixels. Lower is cheaper; 1024 stays legible for UI."),
+      },
+    },
+    async ({ maxDimension }) => {
+      const deviceId = pickOnlineDevice(gateway);
       const result = (await unwrap(
-        await gateway.sendRequest(deviceId, { type: "capture_screenshot" }),
-      )) as { dataBase64?: string; width?: number; height?: number };
+        await gateway.sendRequest(deviceId, {
+          type: "capture_screenshot",
+          maxDimension,
+          format: "jpeg",
+          quality: 75,
+        }),
+      )) as {
+        dataBase64?: string;
+        format?: string;
+        width?: number;
+        height?: number;
+        sourceWidth?: number;
+        sourceHeight?: number;
+      };
       if (!result?.dataBase64) throw new Error("Screenshot unavailable on device");
+      // Kept server-side as well as sent to the model: the pixels the agent
+      // reasoned over are exactly what an operator needs to see afterwards,
+      // and routing them through the transcript as base64 is not viable (see
+      // media/frames.ts). The id is the only part that reaches the transcript.
+      const frame = storeFrame({
+        dataBase64: result.dataBase64,
+        format: result.format,
+        width: result.width,
+        height: result.height,
+        sourceWidth: result.sourceWidth,
+        sourceHeight: result.sourceHeight,
+      });
       return {
         content: [
           {
             type: "image",
             data: result.dataBase64,
-            mimeType: "image/png",
+            mimeType: frame.mimeType,
           } as never,
           {
             type: "text",
-            text: JSON.stringify({ width: result.width, height: result.height }),
+            // The scale factor is what makes a coordinate read off this image
+            // usable: tap_coordinates works in native screen pixels.
+            text: JSON.stringify({
+              ...frameReference(frame),
+              note: "Multiply any point read off this image by sourceWidth/width before using tap_coordinates.",
+            }),
           },
         ],
       };
+    },
+  );
+
+  server.registerTool(
+    "inspect_screen_visually",
+    {
+      title: "Inspect the screen visually",
+      description:
+        "Sub-agent-only UI-target locator for navigation recovery when an actionable control " +
+        "is drawn or unlabelled and the accessibility tree cannot locate it. Do not use it " +
+        "to read, transcribe, summarize, describe, compare, or interpret screen content. " +
+        "Captures the screen, shows it to a vision model " +
+        "together with the current nodes and their bounds, and answers your question. " +
+        "Returns {resolution, observation, ...}: 'node' with a snapshotId+nodeId you act on " +
+        "normally with click_node/set_text, 'coordinates' (screen pixels, for drawn controls " +
+        "with no node) for tap_coordinates, 'absent' with a suggestion when the target is not " +
+        "on this screen, or 'unavailable' for a secure window. The main agent must not call " +
+        "this tool directly or from Code Mode; it must delegate the visual question to a " +
+        "short-lived, read-only vision-recovery sub-agent. Read-only.",
+      inputSchema: {
+        question: z
+          .string()
+          .min(1)
+          .max(400)
+          .describe("Which actionable UI target must be located on the current screen?"),
+        expectation: z
+          .string()
+          .max(400)
+          .optional()
+          .describe("What you expected to be on screen, if you have a hypothesis."),
+      },
+    },
+    async ({ question, expectation }) => {
+      const result = await inspectScreenVisually(
+        gateway,
+        { question, expectation },
+        {
+          vision: options.vision,
+          // The frame is stored but never returned to the caller as pixels:
+          // the whole point of this tool is that no image enters any context.
+          recordFrame: (shot) => frameReference(storeFrame(shot)),
+        },
+      );
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
     },
   );
 
