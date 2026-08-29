@@ -7,6 +7,11 @@
     "dev": "tsx watch --env-file=.env src/index.ts",
     "start": "tsx --env-file=.env src/index.ts",
     "smoke": "tsx --env-file=.env src/trueforge/smoke.ts",
+    "smoke:sandbox": "tsx --env-file=.env src/trueforge/sandbox-smoke.ts",
+    "smoke:vision": "tsx --env-file=.env src/vision/smoke.ts",
+    "eval": "tsx --env-file=.env src/evals/run.ts",
+    "eval:phone": "tsx --env-file=.env src/evals/phone-pipeline.ts",
+    "test:eval": "tsx --test src/evals/*.test.ts src/evals/**/*.test.ts src/mcp/*.test.ts src/approvals/*.test.ts src/devices/*.test.ts src/vision/*.test.ts src/dashboard/*.test.ts src/media/*.test.ts src/trueforge/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
