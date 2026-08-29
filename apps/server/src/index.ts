@@ -94,20 +94,9 @@ async function handleApi(
   const send = (status: number, body: unknown): void => {
     res.writeHead(status, {
       "content-type": "application/json",
-      "access-control-allow-origin": "*",
     });
     res.end(JSON.stringify(body));
   };
-
-  if (req.method === "OPTIONS") {
-    res.writeHead(204, {
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "GET, POST, OPTIONS",
-      "access-control-allow-headers": "content-type",
-    });
-    res.end();
-    return;
-  }
 
   if (req.method === "GET" && pathname === "/health") {
     return send(200, { ok: true });
@@ -206,7 +195,6 @@ async function handleApi(
     res.writeHead(200, {
       "content-type": frame.mimeType,
       "content-length": frame.bytes.length,
-      "access-control-allow-origin": "*",
       // Frame ids are unique per capture, so the bytes behind one never change.
       "cache-control": "private, max-age=3600, immutable",
       "x-frame-size": `${frame.width}x${frame.height}`,
@@ -238,7 +226,6 @@ async function handleApi(
     if (runId && isRunLive(runId)) {
       return send(409, { error: "run is still in progress" });
     }
-    res.setHeader("access-control-allow-origin", "*");
     return streamDashboardRun(prompt, res, gateway, { runId });
   }
 

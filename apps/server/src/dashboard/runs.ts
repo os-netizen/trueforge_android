@@ -250,7 +250,6 @@ export async function streamRunTranscript(
   res.writeHead(200, {
     "content-type": "application/x-ndjson; charset=utf-8",
     "cache-control": "no-cache, no-transform",
-    "access-control-allow-origin": "*",
     connection: "keep-alive",
   });
 
@@ -306,6 +305,7 @@ function runFromHistory(sessionId: string, transcript: SessionTranscript): Dashb
   return {
     id: sessionId,
     sessionId,
+    historical: true,
     prompt: last?.prompt ?? "",
     title: first?.prompt ?? sessionId,
     status: last?.status === "error" ? "failed" : "completed",

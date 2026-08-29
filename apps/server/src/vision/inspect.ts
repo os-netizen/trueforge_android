@@ -104,6 +104,14 @@ interface Screenshot {
   sourceHeight?: number;
 }
 
+function screenSignature(snapshot: Snapshot): string {
+  return JSON.stringify({
+    packageName: snapshot.packageName,
+    windowTitle: snapshot.windowTitle ?? null,
+    nodes: snapshot.nodes,
+  });
+}
+
 function unwrap(response: Record<string, unknown>): unknown {
   if (response.ok !== true) {
     const err = response.error;
@@ -361,10 +369,7 @@ export async function inspectScreenVisually(
   const after = unwrap(
     await gateway.sendRequest(deviceId, { type: "get_screen" }),
   ) as Snapshot;
-  if (
-    after.packageName !== snapshot.packageName ||
-    (after.windowTitle ?? null) !== (snapshot.windowTitle ?? null)
-  ) {
+  if (screenSignature(after) !== screenSignature(snapshot)) {
     return {
       resolution: "unavailable",
       frame,
@@ -385,6 +390,24 @@ export async function inspectScreenVisually(
       prompt: buildPrompt(req, snapshot, candidates, shot, scale),
     }),
   );
+
+  // Vision can take tens of seconds. Re-bind the answer to a fresh snapshot
+  // after inference so neither coordinates nor node ids escape from a frame
+  // that has since gone stale. Android creates a new snapshot id on every
+  // read, even when the content is unchanged, so compare content and return
+  // the newest id rather than comparing ids directly.
+  const latest = unwrap(
+    await gateway.sendRequest(deviceId, { type: "get_screen" }),
+  ) as Snapshot;
+  if (screenSignature(latest) !== screenSignature(after)) {
+    return {
+      resolution: "unavailable",
+      frame,
+      observation:
+        "The screen changed while vision was analyzing it. Re-observe the current screen " +
+        "before taking any action.",
+    };
+  }
 
   const observation = asText(answer.observation, "The vision model returned no observation.");
 
@@ -408,7 +431,7 @@ export async function inspectScreenVisually(
     return {
       resolution: "node",
       frame,
-      snapshotId: snapshot.snapshotId,
+      snapshotId: latest.snapshotId,
       nodeId: actionable.id,
       confidence: asConfidence(answer.confidence),
       observation:
@@ -463,7 +486,7 @@ export async function inspectScreenVisually(
     return {
       resolution: "coordinates",
       frame,
-      snapshotId: snapshot.snapshotId,
+      snapshotId: latest.snapshotId,
       x: clamp(x * scale.x, width),
       y: clamp(y * scale.y, height),
       confidence: asConfidence(answer.confidence),

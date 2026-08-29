@@ -178,6 +178,38 @@ test("refuses to answer when the screen moved mid-capture", async () => {
   assert.equal(vision.seen.length, 0);
 });
 
+test("refuses a vision answer when the screen changes during inference", async () => {
+  let screens = 0;
+  const gateway: VisionGatewayLike = {
+    listDevices: () => [{ deviceId: "tablet-1" }],
+    isOnline: () => true,
+    sendRequest: async (_deviceId, request) => {
+      if (request.type === "get_screen") {
+        screens += 1;
+        return {
+          ok: true,
+          result: {
+            snapshotId: `snap-${screens}`,
+            packageName: "com.example.dialer",
+            windowTitle: "Call",
+            nodes: screens < 3
+              ? NODES
+              : NODES.map((node) => node.id === "n2" ? { ...node, text: "Unmute" } : node),
+          },
+        };
+      }
+      return { ok: true, result: SHOT };
+    },
+  };
+  const vision = caller('{"resolution":"node","nodeId":"n2","observation":"Mute"}');
+
+  const result = await inspectScreenVisually(gateway, { question: "q" }, { vision: vision.fn });
+
+  assert.equal(result.resolution, "unavailable");
+  assert.match(result.observation, /changed while vision was analyzing/);
+  assert.equal(vision.seen.length, 1);
+});
+
 test("keeps interactable nodes when small labels would crowd them out", () => {
   const labels: Node[] = Array.from({ length: 80 }, (_, i) => ({
     id: `label-${i}`,
