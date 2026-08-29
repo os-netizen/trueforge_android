@@ -259,7 +259,9 @@ export function App() {
 
   const submitPrompt = useCallback(async (prompt) => {
     // A follow-up continues the selected session; "New" clears the selection.
-    const continuingId = run && !running ? run.id : undefined;
+    // History-only sessions are not registered in this bridge process, so the
+    // server cannot safely resume them even though their transcript is visible.
+    const continuingId = run && !running && !run.historical ? run.id : undefined;
     transcriptAbort.current?.abort();
     setRunning(true);
     if (!continuingId) setItems([]);
@@ -391,7 +393,7 @@ export function App() {
           onSubmit={submitPrompt}
           running={running}
           disabled={!device}
-          continuing={Boolean(run && !running)}
+          continuing={Boolean(run && !running && !run.historical)}
         />
       </main>
       <Inspector
