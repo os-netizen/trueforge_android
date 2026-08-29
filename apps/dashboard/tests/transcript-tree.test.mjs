@@ -80,3 +80,15 @@ test("the problems filter keeps a failed sub-agent container", () => {
   const roots = groupByThread([failed, item(2, "tool", "t1")], "problems");
   assert.deepEqual(roots.map((entry) => entry.id), ["sub-t1"]);
 });
+
+test("filters recursively remove empty nested sub-agent containers", () => {
+  const roots = groupByThread([
+    container(1, "outer"),
+    container(2, "inner", "outer"),
+    item(3, "reasoning", "inner"),
+    item(4, "tool", "outer"),
+  ], "tools");
+
+  assert.deepEqual(roots.map((entry) => entry.id), ["sub-outer"]);
+  assert.deepEqual(roots[0].nested.map((entry) => entry.id), ["i4"]);
+});

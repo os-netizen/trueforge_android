@@ -388,7 +388,7 @@ export function Transcript({ items, running, emptyHint }) {
 
   useEffect(() => {
     if (follow) bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [visible.length, follow]);
+  }, [visible, follow]);
 
   return (
     <section className="transcript">

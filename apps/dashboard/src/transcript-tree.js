@@ -67,5 +67,10 @@ export function groupByThread(items, filter) {
     || filter === "all"
     || item.nested.length > 0
     || matchesFilter(item, filter);
-  return roots.filter(keep).sort(bySeq);
+  const prune = (item) => {
+    if (item.kind !== "subagent") return item;
+    item.nested = item.nested.map(prune).filter(Boolean);
+    return keep(item) ? item : null;
+  };
+  return roots.map(prune).filter(Boolean).sort(bySeq);
 }

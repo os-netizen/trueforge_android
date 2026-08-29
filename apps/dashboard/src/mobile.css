@@ -51,9 +51,9 @@
     box-shadow: none;
   }
 
-  .runs-sidebar,
-  .workspace,
-  .inspector {
+  .app-shell .runs-sidebar,
+  .app-shell .workspace,
+  .app-shell .inspector {
     display: none;
     position: relative;
     inset: auto;
@@ -64,9 +64,9 @@
     border: 0;
   }
 
-  .runs-sidebar.mobile-active,
-  .workspace.mobile-active,
-  .inspector.mobile-active {
+  .app-shell .runs-sidebar.mobile-active,
+  .app-shell .workspace.mobile-active,
+  .app-shell .inspector.mobile-active {
     display: flex;
   }
 
@@ -212,6 +212,12 @@
   .device-facts,
   .inspector-facts {
     font-size: 12px;
+  }
+}
+
+@media (min-width: 821px) and (max-width: 1180px) {
+  .inspector.mobile-active {
+    transform: translateX(0);
   }
 }
 

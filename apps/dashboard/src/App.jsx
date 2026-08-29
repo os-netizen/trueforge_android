@@ -263,6 +263,8 @@ export function App() {
     // server cannot safely resume them even though their transcript is visible.
     const continuingId = run && !running && !run.historical ? run.id : undefined;
     transcriptAbort.current?.abort();
+    const controller = new AbortController();
+    transcriptAbort.current = controller;
     setRunning(true);
     if (!continuingId) setItems([]);
 
@@ -280,11 +282,12 @@ export function App() {
     setRuns((current) => [optimistic, ...current.filter((entry) => entry.id !== optimistic.id)].slice(0, 20));
 
     try {
-      const response = await startRun({ prompt, runId: continuingId });
+      const response = await startRun({ prompt, runId: continuingId }, controller.signal);
       if (!response.ok || !response.body) {
         throw new Error((await response.json().catch(() => ({}))).error || "Could not start run");
       }
-      for await (const envelope of readNdjson(response)) {
+      for await (const envelope of readNdjson(response, controller.signal)) {
+        if (transcriptAbort.current !== controller || controller.signal.aborted) return;
         if (envelope.type === "transcript.item") {
           setItems((current) => mergeItem(current, envelope.data));
         } else if (envelope.type.startsWith("run.")) {
@@ -298,6 +301,7 @@ export function App() {
         // agent.event / approval.* are already folded into transcript items.
       }
     } catch (error) {
+      if (controller.signal.aborted || transcriptAbort.current !== controller) return;
       setRun((current) => ({
         ...(current || optimistic),
         status: "failed",
@@ -316,8 +320,10 @@ export function App() {
         text: error.message,
       }));
     } finally {
-      setRunning(false);
-      refresh();
+      if (transcriptAbort.current === controller) {
+        setRunning(false);
+        refresh();
+      }
     }
   }, [run, running, refresh]);
 
