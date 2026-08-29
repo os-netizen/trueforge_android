@@ -66,4 +66,14 @@ test("rejects malformed and oversized frame payloads before retention", () => {
     () => storeFrame({ dataBase64: oversized, width: 10, height: 10 }),
     /per-frame byte limit/,
   );
+  assert.throws(
+    () => storeFrame({
+      dataBase64: PIXEL,
+      width: 10,
+      height: 10,
+      sourceWidth: 50_000,
+      sourceHeight: 10,
+    }),
+    /source dimensions/,
+  );
 });

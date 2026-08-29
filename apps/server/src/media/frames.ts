@@ -21,6 +21,7 @@ const MAX_FRAMES = 60;
 const MAX_FRAME_BYTES = 5 * 1024 * 1024;
 const MAX_RETAINED_BYTES = 30 * 1024 * 1024;
 const MAX_DIMENSION = 4096;
+const MAX_SOURCE_DIMENSION = 8192;
 
 export interface StoredFrame {
   id: string;
@@ -51,9 +52,16 @@ let retainedBytes = 0;
 export function storeFrame(input: FrameInput): StoredFrame {
   const width = input.width ?? 0;
   const height = input.height ?? 0;
+  const sourceWidth = input.sourceWidth ?? width;
+  const sourceHeight = input.sourceHeight ?? height;
   if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0 ||
       width > MAX_DIMENSION || height > MAX_DIMENSION) {
     throw new Error("Screenshot dimensions are invalid or exceed the frame limit");
+  }
+  if (!Number.isInteger(sourceWidth) || !Number.isInteger(sourceHeight) ||
+      sourceWidth <= 0 || sourceHeight <= 0 ||
+      sourceWidth > MAX_SOURCE_DIMENSION || sourceHeight > MAX_SOURCE_DIMENSION) {
+    throw new Error("Screenshot source dimensions are invalid or exceed the geometry limit");
   }
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(input.dataBase64) || input.dataBase64.length % 4 !== 0) {
     throw new Error("Screenshot payload is not valid base64");
@@ -71,8 +79,8 @@ export function storeFrame(input: FrameInput): StoredFrame {
     mimeType: input.format === "png" ? "image/png" : "image/jpeg",
     width,
     height,
-    sourceWidth: input.sourceWidth ?? width,
-    sourceHeight: input.sourceHeight ?? height,
+    sourceWidth,
+    sourceHeight,
     capturedAt: new Date().toISOString(),
   };
   frames.set(frame.id, frame);

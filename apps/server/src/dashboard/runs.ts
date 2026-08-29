@@ -187,7 +187,9 @@ function prepareAgent(): Promise<void> {
  * the level it started with. The vision level is read per call and so takes
  * effect immediately. Nothing is written when the value did not move.
  */
-export async function applyReasoningSettings(patch: {
+let reasoningUpdateQueue: Promise<void> = Promise.resolve();
+
+async function applyReasoningSettingsSerial(patch: {
   agent?: ReasoningEffort;
   vision?: ReasoningEffort;
 }): Promise<{ settings: ReturnType<typeof reasoningSettings>; applied: boolean }> {
@@ -213,6 +215,15 @@ export async function applyReasoningSettings(patch: {
     throw error;
   }
   return { settings, applied: true };
+}
+
+export function applyReasoningSettings(patch: {
+  agent?: ReasoningEffort;
+  vision?: ReasoningEffort;
+}): Promise<{ settings: ReturnType<typeof reasoningSettings>; applied: boolean }> {
+  const operation = reasoningUpdateQueue.then(() => applyReasoningSettingsSerial(patch));
+  reasoningUpdateQueue = operation.then(() => undefined, () => undefined);
+  return operation;
 }
 
 /** Current reasoning levels and the values the provider will accept. */
