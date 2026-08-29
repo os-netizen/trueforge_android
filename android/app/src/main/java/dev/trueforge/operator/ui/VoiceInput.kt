@@ -54,7 +54,10 @@ class VoiceInputController(private val context: Context) {
             override fun onBeginningOfSpeech() {}
             override fun onRmsChanged(rmsdB: Float) {}
             override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() { listening = false }
+            // Keep the session active until onResults/onError. Android sends
+            // the final transcript after end-of-speech, and restarting here
+            // would destroy that still-pending recognizer.
+            override fun onEndOfSpeech() {}
 
             override fun onError(errorCode: Int) {
                 listening = false

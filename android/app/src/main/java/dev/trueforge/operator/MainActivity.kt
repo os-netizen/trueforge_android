@@ -53,6 +53,8 @@ class MainActivity : ComponentActivity() {
     private val runClient = TaskRunClient { serverUrl }
     private var runJob: Job? = null
     private var agentEventCount = 0
+    private var stopRequested = false
+    private var stopCancellationSent = false
     private lateinit var voice: VoiceInputController
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -124,6 +126,8 @@ class MainActivity : ComponentActivity() {
         val prompt = task.prompt.trim()
         if (prompt.isEmpty() || task.runActive) return
         voice.stop()
+        stopRequested = false
+        stopCancellationSent = false
         agentEventCount = 0
         task = task.copy(
             runActive = true,
@@ -158,6 +162,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun applyRunEvent(event: TaskRunClient.RunEvent) {
+        if (stopRequested && !stopCancellationSent && event.runId != null) {
+            stopCancellationSent = true
+            lifecycleScope.launch {
+                runCatching { runClient.cancel(event.runId) }
+            }
+        }
         if (event.type == "agent.event") agentEventCount += 1
         val statusLine = when (event.type) {
             "run.created" -> "Starting…"
@@ -186,6 +196,8 @@ class MainActivity : ComponentActivity() {
 
     private fun stopTask() {
         val runId = task.runId
+        stopRequested = true
+        stopCancellationSent = runId != null
         task = task.copy(statusLine = "Stopping…")
         lifecycleScope.launch {
             try {

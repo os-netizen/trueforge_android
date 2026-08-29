@@ -1,10 +1,12 @@
 package dev.trueforge.operator.networking
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.job
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -221,25 +223,31 @@ class TaskRunClient(private val serverUrlProvider: () -> String) {
             .post(body)
             .build()
 
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                val detail = response.body.string().take(300)
-                emit(
-                    RunEvent(
-                        type = "run.failed",
-                        status = "failed",
-                        error = "HTTP ${response.code}${if (detail.isBlank()) "" else ": $detail"}",
-                        summary = "Run failed",
-                    ),
-                )
-                return@use
+        val call = client.newCall(request)
+        val cancellation = currentCoroutineContext().job.invokeOnCompletion { call.cancel() }
+        try {
+            call.execute().use { response ->
+                if (!response.isSuccessful) {
+                    val detail = response.body.string().take(300)
+                    emit(
+                        RunEvent(
+                            type = "run.failed",
+                            status = "failed",
+                            error = "HTTP ${response.code}${if (detail.isBlank()) "" else ": $detail"}",
+                            summary = "Run failed",
+                        ),
+                    )
+                    return@use
+                }
+                val source = response.body.source()
+                while (true) {
+                    val line = source.readUtf8Line() ?: break
+                    val event = reader.read(line) ?: continue
+                    emit(event)
+                }
             }
-            val source = response.body.source()
-            while (true) {
-                val line = source.readUtf8Line() ?: break
-                val event = reader.read(line) ?: continue
-                emit(event)
-            }
+        } finally {
+            cancellation.dispose()
         }
     }.flowOn(Dispatchers.IO)
 

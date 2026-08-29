@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import dev.trueforge.operator.MainActivity
@@ -15,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The phone is the approval surface (Milestone 6).
@@ -30,6 +32,7 @@ object ApprovalCoordinator {
     private const val TAG = "OperatorApproval"
     const val CHANNEL_ID = "operator_approvals"
     private const val NOTIFICATION_ID_BASE = 4200
+    private val nextNotificationId = AtomicInteger(NOTIFICATION_ID_BASE)
 
     data class PendingApproval(
         val requestId: String,
@@ -56,15 +59,21 @@ object ApprovalCoordinator {
         request: DeviceRequest.RequestApproval,
     ): ApprovalDecision {
         val appContext = context.applicationContext
-        val deferred = CompletableDeferred<ApprovalDecision>()
-        waiters[request.requestId] = deferred
-        _pending.value = PendingApproval(
-            requestId = request.requestId,
-            toolCallId = request.toolCallId,
-            intent = request.intent,
-            actionJson = request.actionJson,
-            deadlineUptimeMs = android.os.SystemClock.uptimeMillis() + request.timeoutMs,
-        )
+        val deferred = synchronized(this) {
+            if (waiters.isNotEmpty()) {
+                return ApprovalDecision.deny("another approval is already pending on the device")
+            }
+            CompletableDeferred<ApprovalDecision>().also {
+                waiters[request.requestId] = it
+                _pending.value = PendingApproval(
+                    requestId = request.requestId,
+                    toolCallId = request.toolCallId,
+                    intent = request.intent,
+                    actionJson = request.actionJson,
+                    deadlineUptimeMs = android.os.SystemClock.uptimeMillis() + request.timeoutMs,
+                )
+            }
+        }
         postNotification(appContext, request)
 
         return try {
@@ -115,7 +124,7 @@ object ApprovalCoordinator {
             },
         )
 
-        val notificationId = NOTIFICATION_ID_BASE + (request.requestId.hashCode() and 0xFF)
+        val notificationId = nextNotificationId.incrementAndGet()
         notificationIds[request.requestId] = notificationId
 
         val open = PendingIntent.getActivity(
@@ -163,10 +172,11 @@ object ApprovalCoordinator {
         notificationId * 2 + if (decision == "allow") 1 else 0,
         Intent(appContext, ApprovalDecisionReceiver::class.java).apply {
             action = ApprovalDecisionReceiver.ACTION_DECIDE
+            data = Uri.parse("trueforge://approval/${Uri.encode(requestId)}/$decision")
             setPackage(appContext.packageName)
             putExtra(ApprovalDecisionReceiver.EXTRA_REQUEST_ID, requestId)
             putExtra(ApprovalDecisionReceiver.EXTRA_DECISION, decision)
         },
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        PendingIntent.FLAG_CANCEL_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 }

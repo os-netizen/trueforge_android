@@ -23,7 +23,8 @@ class OperatorNotificationListenerService : NotificationListenerService() {
     companion object {
         @Volatile private var running: OperatorNotificationListenerService? = null
 
-        fun notifications(): List<NotificationState>? = running?.activeNotifications?.map { item ->
+        fun notifications(): List<NotificationState>? = running?.let { service ->
+          service.activeNotifications.filter { it.packageName != service.packageName }.map { item ->
             val extras = item.notification.extras
             NotificationState(
                 key = item.key,
@@ -34,6 +35,7 @@ class OperatorNotificationListenerService : NotificationListenerService() {
                 ongoing = item.isOngoing,
                 actions = item.notification.actions?.map { it.title?.toString().orEmpty() } ?: emptyList(),
             )
+          }
         }
 
         fun control(key: String, action: String, actionIndex: Int?): ActionResult {
@@ -44,6 +46,12 @@ class OperatorNotificationListenerService : NotificationListenerService() {
             )
             val item = service.activeNotifications.firstOrNull { it.key == key }
                 ?: return ActionResult(status = ActionStatus.FAILED, error = "notification not found")
+            if (item.packageName == service.packageName) {
+                return ActionResult(
+                    status = ActionStatus.FAILED,
+                    error = "operator governance notifications cannot be controlled",
+                )
+            }
             return try {
                 when (action) {
                     "dismiss" -> service.cancelNotification(key)

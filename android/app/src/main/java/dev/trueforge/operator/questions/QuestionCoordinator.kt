@@ -14,11 +14,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /** Coordinates non-safety user questions separately from binary action approvals. */
 object QuestionCoordinator {
     const val CHANNEL_ID = "operator_questions"
     private const val NOTIFICATION_ID_BASE = 4600
+    private val nextNotificationId = AtomicInteger(NOTIFICATION_ID_BASE)
 
     data class PendingQuestion(
         val requestId: String,
@@ -38,15 +40,19 @@ object QuestionCoordinator {
         request: DeviceRequest.RequestUserQuestion,
     ): UserQuestionResult? {
         val appContext = context.applicationContext
-        val deferred = CompletableDeferred<UserQuestionResult?>()
-        waiters[request.requestId] = deferred
-        _pending.value = PendingQuestion(
-            request.requestId,
-            request.toolCallId,
-            request.question,
-            request.options.take(5),
-            android.os.SystemClock.uptimeMillis() + request.timeoutMs,
-        )
+        val deferred = synchronized(this) {
+            if (waiters.isNotEmpty()) return null
+            CompletableDeferred<UserQuestionResult?>().also {
+                waiters[request.requestId] = it
+                _pending.value = PendingQuestion(
+                    request.requestId,
+                    request.toolCallId,
+                    request.question,
+                    request.options.take(5),
+                    android.os.SystemClock.uptimeMillis() + request.timeoutMs,
+                )
+            }
+        }
         postNotification(appContext, request)
         return try {
             withTimeoutOrNull(request.timeoutMs) { deferred.await() }
@@ -78,7 +84,7 @@ object QuestionCoordinator {
                 NotificationManager.IMPORTANCE_HIGH,
             ).apply { description = "Questions the agent needs you to answer before continuing" },
         )
-        val notificationId = NOTIFICATION_ID_BASE + (request.requestId.hashCode() and 0xFF)
+        val notificationId = nextNotificationId.incrementAndGet()
         notificationIds[request.requestId] = notificationId
         val open = PendingIntent.getActivity(
             context,
