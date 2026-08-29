@@ -75,19 +75,25 @@ export class DeviceGateway extends EventEmitter {
    * Sends a request to a device and resolves with its correlated response.
    * Rejects when the device is offline or the device/times out.
    */
-  sendRequest(deviceId: string, request: DeviceRequestInput): Promise<DeviceResponse> {
+  sendRequest(
+    deviceId: string,
+    request: DeviceRequestInput,
+    opts?: { timeoutMs?: number },
+  ): Promise<DeviceResponse> {
     const device = this.devices.get(deviceId);
     if (!device || device.socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error(`Device '${deviceId}' is offline`));
     }
     const requestId = `req_${randomUUID().slice(0, 8)}`;
     const full = { ...request, requestId } as DeviceRequest;
+    // Approvals wait on a human, far past the default per-request budget.
+    const timeoutMs = opts?.timeoutMs ?? REQUEST_TIMEOUT_MS;
 
     return new Promise<DeviceResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
         device.pending.delete(requestId);
         reject(new Error(`Device '${deviceId}' timed out for ${full.type}`));
-      }, REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
       device.pending.set(requestId, { resolve, reject, timer });
       device.socket.send(JSON.stringify(full), (err) => {
         if (err) {
