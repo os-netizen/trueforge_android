@@ -144,7 +144,7 @@ All hackathon work landed through Qodo-reviewed pull requests:
 | [#1](https://github.com/os-netizen/trueforge_android/pull/1) | Android operator app | [Qodo review](https://github.com/os-netizen/trueforge_android/pull/1#issuecomment-5463412718) | [Safety, cancellation, prompt, and voice fixes documented](https://github.com/os-netizen/trueforge_android/pull/1#issuecomment-5463925746) |
 | [#4](https://github.com/os-netizen/trueforge_android/pull/4) | Server: approvals, sandbox, vision, evals | [Qodo review](https://github.com/os-netizen/trueforge_android/pull/4#issuecomment-5463404563) | [Fail-closed and bounded-state fixes documented](https://github.com/os-netizen/trueforge_android/pull/4#issuecomment-5463914320) |
 | [#2](https://github.com/os-netizen/trueforge_android/pull/2) | Dashboard | [Qodo review](https://github.com/os-netizen/trueforge_android/pull/2#issuecomment-5463438655) | [Responsive, streaming, and filter fixes documented](https://github.com/os-netizen/trueforge_android/pull/2#issuecomment-5463934109) |
-| PR 5 (this documentation PR) | README + project guidance | Pending | Pending |
+| [#5](https://github.com/os-netizen/trueforge_android/pull/5) | README + project guidance | [Qodo review](https://github.com/os-netizen/trueforge_android/pull/5#issuecomment-5463968396) | No material issues found; evidence links finalized in follow-up commit |
 
 ## What we learned about the harness
 
