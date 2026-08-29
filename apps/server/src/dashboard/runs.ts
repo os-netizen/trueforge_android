@@ -140,7 +140,7 @@ export function findDashboardRun(runId: string): DashboardRun | undefined {
 }
 
 export function isRunLive(runId: string): boolean {
-  return activeRuns.has(runId);
+  return activeRuns.has(findDashboardRun(runId)?.id ?? runId);
 }
 
 /**
@@ -191,18 +191,27 @@ export async function applyReasoningSettings(patch: {
   agent?: ReasoningEffort;
   vision?: ReasoningEffort;
 }): Promise<{ settings: ReturnType<typeof reasoningSettings>; applied: boolean }> {
+  const previous = reasoningSettings();
   const { settings, changed } = updateReasoningSettings(patch);
   if (!changed.includes("agent")) return { settings, applied: false };
   // Deliberately not gated on `agentReady`: the level must stick even if the
   // agent has not been prepared yet in this process, and ensureAgent is an
   // idempotent create-or-update.
-  await prepareAgent();
-  await ensureAgent({
-    agentName: config.agentName,
-    mcpServerName: ANDROID_TOOL_BRIDGE_NAME,
-    sandbox: sandboxAvailable(),
-    reasoningEffort: settings.agent,
-  });
+  try {
+    await prepareAgent();
+    await ensureAgent({
+      agentName: config.agentName,
+      mcpServerName: ANDROID_TOOL_BRIDGE_NAME,
+      sandbox: sandboxAvailable(),
+      reasoningEffort: settings.agent,
+    });
+  } catch (error) {
+    // Vision is local and may apply independently, but an agent value is only
+    // committed after the matching manifest write succeeds. Rolling it back
+    // also makes an identical retry attempt the write again.
+    updateReasoningSettings({ agent: previous.agent });
+    throw error;
+  }
   return { settings, applied: true };
 }
 

@@ -259,6 +259,56 @@ test("a call_tool-wrapped pause still shows the real intent and action", async (
   }]);
 });
 
+test("a malformed approval is denied without consulting the decider", async () => {
+  const paused = pausedTurn();
+  (paused[0] as { toolCalls: Array<{ function: { arguments: string } }> })
+    .toolCalls[0]!.function.arguments = "{";
+  const { client, sent } = fakeClient([paused, finishedTurn("Denied malformed call.")]);
+  let decisions = 0;
+
+  const result = await runTurnLoopWithApprovals({
+    client,
+    sessionId: "session-1",
+    prompt: "dismiss it",
+    decide: async () => {
+      decisions += 1;
+      return { decision: "allow" };
+    },
+  });
+
+  assert.equal(decisions, 0);
+  const resume = sent[1]?.input[0] as TrueForgeApi.UserToolApprovalEvent;
+  assert.equal(resume.approval.status, "deny");
+  assert.match(resume.approval.status === "deny" ? resume.approval.reason ?? "" : "", /malformed/);
+  assert.equal(result.approvals[0]?.decision, "deny");
+});
+
+test("every required-action group is included in one resume turn", async () => {
+  const approval = pausedTurn();
+  const question = questionTurn();
+  const done = approval.at(-1) as {
+    state: { requiredActions: unknown[] };
+  };
+  done.state.requiredActions.push(
+    ...(question.at(-1) as { state: { requiredActions: unknown[] } }).state.requiredActions,
+  );
+  const combined = [approval[0], question[0], done];
+  const { client, sent } = fakeClient([combined, finishedTurn("Both resolved.")]);
+
+  await runTurnLoopWithApprovals({
+    client,
+    sessionId: "session-1",
+    prompt: "do both",
+    decide: async () => ({ decision: "allow" }),
+    answer: async () => ({ content: "@tibo_maker" }),
+  });
+
+  assert.deepEqual(sent[1]?.input.map((item) => item.type), [
+    "user.tool_approval",
+    "user.tool_response",
+  ]);
+});
+
 test("the loop stops after the turn cap instead of resuming forever", async () => {
   const { client, sent } = fakeClient([pausedTurn(), pausedTurn(), pausedTurn()]);
 

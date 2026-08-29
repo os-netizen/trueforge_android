@@ -104,8 +104,8 @@ export async function runTurnLoopWithApprovals(
     if (turn > 0) opts.onResume?.();
     const stream = await opts.client.sessions.createTurnStream(opts.sessionId, { input });
     const messages = new Map<string, TrueForgeApi.ModelMessageEvent>();
-    let requiredAction: TrueForgeApi.ToolApprovalRequiredEvent |
-      TrueForgeApi.ToolResponseRequiredEvent | null = null;
+    let requiredActions: Array<TrueForgeApi.ToolApprovalRequiredEvent |
+      TrueForgeApi.ToolResponseRequiredEvent> = [];
 
     for await (const raw of stream) {
       const event = raw as TrueForgeApi.TurnStreamingEvent;
@@ -130,24 +130,47 @@ export async function runTurnLoopWithApprovals(
       }
       if (event.state.status === "done") {
         turnStatus = "done";
-        requiredAction = event.state.requiredActions?.find(
+        const allRequired = event.state.requiredActions ?? [];
+        requiredActions = allRequired.filter(
           (action): action is TrueForgeApi.ToolApprovalRequiredEvent |
             TrueForgeApi.ToolResponseRequiredEvent =>
             action.type === "tool.approval_required" || action.type === "tool.response_required",
-        ) ?? null;
+        );
+        if (requiredActions.length !== allRequired.length) {
+          turnStatus = "error";
+          turnError = "TrueForge returned an unsupported required action";
+        }
         const content = event.state.output?.content;
-        if (!requiredAction && typeof content === "string") output = content;
+        if (!requiredActions.length && typeof content === "string") output = content;
       }
     }
 
-    if (turnStatus === "error" || !requiredAction) {
+    if (turnStatus === "error" || !requiredActions.length) {
       return { events, output, turnStatus, turnError, approvals };
     }
 
     input = [];
-    for (const ref of requiredAction.toolCalls) {
-      if (requiredAction.type === "tool.approval_required") {
-        const info = describePendingCall(ref, messages);
+    for (const requiredAction of requiredActions) {
+      for (const ref of requiredAction.toolCalls) {
+        if (requiredAction.type === "tool.approval_required") {
+          let info: PendingApprovalInfo;
+          try {
+            info = describePendingCall(ref, messages);
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            approvals.push({
+              toolCallId: ref.id,
+              intent: "Malformed approval request",
+              decision: "deny",
+            });
+            input.push({
+              type: "user.tool_approval",
+              threadId: requiredAction.threadId,
+              toolCallId: ref.id,
+              approval: { status: "deny", reason },
+            });
+            continue;
+          }
         opts.onPending?.(info);
         const outcome = await resolveFailClosed(opts.decide, info);
         opts.onDecided?.(info, outcome);
@@ -164,19 +187,20 @@ export async function runTurnLoopWithApprovals(
             ? { status: "allow" }
             : { status: "deny", reason: outcome.reason ?? "User denied the action" },
         });
-      } else {
-        const info = describePendingQuestion(ref, messages);
-        opts.onQuestionPending?.(info);
-        if (!opts.answer) throw new Error("No client-side question handler is configured");
-        const outcome = await opts.answer(info);
-        if (!outcome.content.trim()) throw new Error("The device returned an empty answer");
-        opts.onQuestionAnswered?.(info, outcome);
-        input.push({
-          type: "user.tool_response",
-          threadId: requiredAction.threadId,
-          toolCallId: ref.id,
-          content: outcome.content,
-        });
+        } else {
+          const info = describePendingQuestion(ref, messages);
+          opts.onQuestionPending?.(info);
+          if (!opts.answer) throw new Error("No client-side question handler is configured");
+          const outcome = await opts.answer(info);
+          if (!outcome.content.trim()) throw new Error("The device returned an empty answer");
+          opts.onQuestionAnswered?.(info, outcome);
+          input.push({
+            type: "user.tool_response",
+            threadId: requiredAction.threadId,
+            toolCallId: ref.id,
+            content: outcome.content,
+          });
+        }
       }
     }
   }
@@ -220,8 +244,13 @@ function describePendingCall(
   messages: Map<string, TrueForgeApi.ModelMessageEvent>,
 ): PendingApprovalInfo {
   const source = messages.get(ref.sourceEventId);
+  if (!source) throw new Error("Approval denied: source message is missing");
   const call = source?.toolCalls?.find((entry) => entry.id === ref.id);
+  if (!call) throw new Error("Approval denied: referenced tool call is missing");
   const parsed = safeParseJson(call?.function.arguments);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Approval denied: tool arguments are malformed");
+  }
   const raw = parsed && typeof parsed === "object"
     ? parsed as Record<string, unknown>
     : {};
@@ -236,15 +265,20 @@ function describePendingCall(
   const toolName = typeof raw.tool_name === "string"
     ? raw.tool_name
     : call?.function.name ?? "unknown";
+  if (toolName !== "commit_action") {
+    throw new Error(`Approval denied: unexpected gated tool ${toolName}`);
+  }
   const action = args.action && typeof args.action === "object"
     ? args.action as Record<string, unknown>
     : {};
+  const intent = typeof args.intent === "string" ? args.intent.trim() : "";
+  if (!intent || typeof action.type !== "string") {
+    throw new Error("Approval denied: commit_action intent or action is malformed");
+  }
   return {
     toolCallId: ref.id,
     toolName,
-    intent: typeof args.intent === "string" && args.intent.trim()
-      ? args.intent
-      : `Execute ${toolName}`,
+    intent,
     action,
     actionJson: JSON.stringify(action),
   };

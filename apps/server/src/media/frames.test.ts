@@ -54,3 +54,16 @@ test("the store is bounded and evicts oldest first", () => {
   assert.equal(getFrame(first.id), undefined);
   assert.ok(getFrame(ids.at(-1)!));
 });
+
+test("rejects malformed and oversized frame payloads before retention", () => {
+  clearFrames();
+  assert.throws(
+    () => storeFrame({ dataBase64: "not base64", width: 10, height: 10 }),
+    /valid base64/,
+  );
+  const oversized = Buffer.alloc(5 * 1024 * 1024 + 1).toString("base64");
+  assert.throws(
+    () => storeFrame({ dataBase64: oversized, width: 10, height: 10 }),
+    /per-frame byte limit/,
+  );
+});

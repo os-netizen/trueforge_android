@@ -18,6 +18,9 @@ import { randomUUID } from "node:crypto";
 
 /** Frames kept at once. Around 30-60 MB at 1024px JPEG, and a run rarely takes more. */
 const MAX_FRAMES = 60;
+const MAX_FRAME_BYTES = 5 * 1024 * 1024;
+const MAX_RETAINED_BYTES = 30 * 1024 * 1024;
+const MAX_DIMENSION = 4096;
 
 export interface StoredFrame {
   id: string;
@@ -43,13 +46,28 @@ export interface FrameInput {
 
 /** Insertion-ordered, which is what makes the oldest key the eviction target. */
 const frames = new Map<string, StoredFrame>();
+let retainedBytes = 0;
 
 export function storeFrame(input: FrameInput): StoredFrame {
   const width = input.width ?? 0;
   const height = input.height ?? 0;
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0 ||
+      width > MAX_DIMENSION || height > MAX_DIMENSION) {
+    throw new Error("Screenshot dimensions are invalid or exceed the frame limit");
+  }
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(input.dataBase64) || input.dataBase64.length % 4 !== 0) {
+    throw new Error("Screenshot payload is not valid base64");
+  }
+  if (input.dataBase64.length * 3 / 4 > MAX_FRAME_BYTES + 2) {
+    throw new Error("Screenshot exceeds the per-frame byte limit");
+  }
+  const bytes = Buffer.from(input.dataBase64, "base64");
+  if (!bytes.length || bytes.length > MAX_FRAME_BYTES) {
+    throw new Error("Screenshot is empty or exceeds the per-frame byte limit");
+  }
   const frame: StoredFrame = {
     id: randomUUID(),
-    bytes: Buffer.from(input.dataBase64, "base64"),
+    bytes,
     mimeType: input.format === "png" ? "image/png" : "image/jpeg",
     width,
     height,
@@ -58,9 +76,11 @@ export function storeFrame(input: FrameInput): StoredFrame {
     capturedAt: new Date().toISOString(),
   };
   frames.set(frame.id, frame);
-  while (frames.size > MAX_FRAMES) {
+  retainedBytes += frame.bytes.length;
+  while (frames.size > MAX_FRAMES || retainedBytes > MAX_RETAINED_BYTES) {
     const oldest = frames.keys().next();
     if (oldest.done) break;
+    retainedBytes -= frames.get(oldest.value)?.bytes.length ?? 0;
     frames.delete(oldest.value);
   }
   return frame;
@@ -95,4 +115,5 @@ export function frameReference(frame: StoredFrame): {
 /** Test seam; the process is otherwise the store's whole lifetime. */
 export function clearFrames(): void {
   frames.clear();
+  retainedBytes = 0;
 }
