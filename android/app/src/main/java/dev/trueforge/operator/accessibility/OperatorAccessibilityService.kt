@@ -8,6 +8,12 @@ import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Rect
 import android.os.Bundle
+import android.os.BatteryManager
+import android.os.PowerManager
+import android.app.KeyguardManager
+import android.media.AudioManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -20,6 +26,7 @@ import dev.trueforge.operator.snapshots.DeviceState
 import dev.trueforge.operator.snapshots.ScreenSnapshot
 import dev.trueforge.operator.snapshots.ScreenshotResult as PngShot
 import dev.trueforge.operator.snapshots.SnapNode
+import dev.trueforge.operator.snapshots.NodeRange
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
@@ -103,18 +110,33 @@ class OperatorAccessibilityService : AccessibilityService() {
             ?: lastWindowStatePackage
             ?: "unknown"
 
-    fun deviceState(deviceId: String): DeviceState = DeviceState(
-        deviceId = deviceId,
-        online = true,
-        foregroundPackage = currentForegroundPackage(),
-        orientation = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
-            "landscape"
-        } else {
-            "portrait"
-        },
-        accessibilityServiceEnabled = true,
-        lastSnapshotId = captured?.snapshotId,
-    )
+    fun deviceState(deviceId: String): DeviceState {
+        val power = getSystemService(PowerManager::class.java)
+        val keyguard = getSystemService(KeyguardManager::class.java)
+        val battery = getSystemService(BatteryManager::class.java)
+        val connectivity = getSystemService(ConnectivityManager::class.java)
+        val network = connectivity.activeNetwork
+        val capabilities = network?.let(connectivity::getNetworkCapabilities)
+        val audio = getSystemService(AudioManager::class.java)
+        return DeviceState(
+            deviceId = deviceId,
+            online = true,
+            foregroundPackage = currentForegroundPackage(),
+            orientation = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) "landscape" else "portrait",
+            accessibilityServiceEnabled = true,
+            lastSnapshotId = captured?.snapshotId,
+            screenInteractive = power.isInteractive,
+            deviceLocked = keyguard.isDeviceLocked,
+            keyguardShowing = keyguard.isKeyguardLocked,
+            batteryPercent = battery.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                .takeIf { it in 0..100 },
+            charging = battery.isCharging,
+            networkValidated = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true,
+            networkMetered = connectivity.isActiveNetworkMetered,
+            mediaVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC),
+            mediaVolumeMax = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC),
+        )
+    }
 
     fun captureSnapshot(deviceId: String): ScreenSnapshot {
         val root = rootInActiveWindow
@@ -143,6 +165,11 @@ class OperatorAccessibilityService : AccessibilityService() {
                     longClickable = node.isLongClickable,
                     editable = node.isEditable,
                     scrollable = node.isScrollable,
+                    focusable = node.isFocusable,
+                    selected = node.isSelected,
+                    checked = if (node.isCheckable) node.isChecked else null,
+                    actions = node.actionList.mapNotNull { actionName(it.id) },
+                    range = node.rangeInfo?.let { NodeRange(it.min, it.max, it.current) },
                     enabled = node.isEnabled,
                 ),
             )
@@ -194,10 +221,12 @@ class OperatorAccessibilityService : AccessibilityService() {
                     longClickable = n.longClickable,
                     editable = n.editable,
                     scrollable = n.scrollable,
-                    focusable = false,
+                    focusable = n.focusable,
                     enabled = n.enabled,
-                    selected = false,
-                    checked = null,
+                    selected = n.selected,
+                    checked = n.checked,
+                    actions = n.actions,
+                    range = n.range,
                 ),
             )
         }
@@ -230,17 +259,26 @@ class OperatorAccessibilityService : AccessibilityService() {
         val longClickable: Boolean,
         val editable: Boolean,
         val scrollable: Boolean,
+        val focusable: Boolean,
+        val selected: Boolean,
+        val checked: Boolean?,
+        val actions: List<String>,
+        val range: NodeRange?,
         val enabled: Boolean,
     )
 
+    suspend fun clickNode(snapshotId: String, nodeId: String): ActionResult =
+        clickLike(snapshotId, nodeId, longPress = false)
+
     suspend fun clickNode(nodeId: String): ActionResult =
-        clickLike(nodeId, longPress = false)
+        clickNode(captured?.snapshotId.orEmpty(), nodeId)
 
-    suspend fun longClickNode(nodeId: String): ActionResult =
-        clickLike(nodeId, longPress = true)
+    suspend fun longClickNode(snapshotId: String, nodeId: String): ActionResult =
+        clickLike(snapshotId, nodeId, longPress = true)
 
-    private suspend fun clickLike(nodeId: String, longPress: Boolean): ActionResult {
+    private suspend fun clickLike(snapshotId: String, nodeId: String, longPress: Boolean): ActionResult {
         val started = System.currentTimeMillis()
+        if (captured?.snapshotId != snapshotId) return result(started, ActionStatus.STALE_SNAPSHOT)
         val ref = captured?.nodeRefs?.get(nodeId)
         if (ref == null) return result(started, ActionStatus.STALE_SNAPSHOT)
 
@@ -268,8 +306,9 @@ class OperatorAccessibilityService : AccessibilityService() {
         else result(started, ActionStatus.FAILED, error = "gesture rejected")
     }
 
-    suspend fun setText(nodeId: String, value: String): ActionResult {
+    suspend fun setText(snapshotId: String, nodeId: String, value: String): ActionResult {
         val started = System.currentTimeMillis()
+        if (captured?.snapshotId != snapshotId) return result(started, ActionStatus.STALE_SNAPSHOT)
         val ref = captured?.nodeRefs?.get(nodeId)
             ?: return result(started, ActionStatus.STALE_SNAPSHOT)
         val args = Bundle().apply {
@@ -287,8 +326,12 @@ class OperatorAccessibilityService : AccessibilityService() {
         else result(started, ActionStatus.FAILED, error = "Node did not accept text")
     }
 
-    suspend fun scroll(direction: String, nodeId: String? = null): ActionResult {
+    suspend fun setText(nodeId: String, value: String): ActionResult =
+        setText(captured?.snapshotId.orEmpty(), nodeId, value)
+
+    suspend fun scroll(snapshotId: String, direction: String, nodeId: String? = null): ActionResult {
         val started = System.currentTimeMillis()
+        if (captured?.snapshotId != snapshotId) return result(started, ActionStatus.STALE_SNAPSHOT)
 
         var left = 0
         var top = 0
@@ -353,7 +396,16 @@ class OperatorAccessibilityService : AccessibilityService() {
         BACK(GLOBAL_ACTION_BACK, "back"),
         HOME(GLOBAL_ACTION_HOME, "home"),
         RECENTS(GLOBAL_ACTION_RECENTS, "recents"),
-        NOTIFICATIONS(GLOBAL_ACTION_NOTIFICATIONS, "notifications");
+        NOTIFICATIONS(GLOBAL_ACTION_NOTIFICATIONS, "notifications"),
+        QUICK_SETTINGS(GLOBAL_ACTION_QUICK_SETTINGS, "quick_settings"),
+        POWER_DIALOG(GLOBAL_ACTION_POWER_DIALOG, "power_dialog"),
+        LOCK_SCREEN(GLOBAL_ACTION_LOCK_SCREEN, "lock_screen"),
+        SCREENSHOT(GLOBAL_ACTION_TAKE_SCREENSHOT, "screenshot"),
+        DPAD_UP(GLOBAL_ACTION_DPAD_UP, "dpad_up"),
+        DPAD_DOWN(GLOBAL_ACTION_DPAD_DOWN, "dpad_down"),
+        DPAD_LEFT(GLOBAL_ACTION_DPAD_LEFT, "dpad_left"),
+        DPAD_RIGHT(GLOBAL_ACTION_DPAD_RIGHT, "dpad_right"),
+        DPAD_CENTER(GLOBAL_ACTION_DPAD_CENTER, "dpad_center");
 
         companion object {
             fun fromWire(name: String): GlobalActionKind? =
@@ -362,7 +414,9 @@ class OperatorAccessibilityService : AccessibilityService() {
     }
 
     fun launchApp(packageName: String): Boolean {
-        val intent = packageManager.getLaunchIntentForPackage(packageName) ?: return false
+        val intent = packageManager.getLaunchIntentForPackage(packageName)
+            ?: resolveLaunchIntentByLabel(packageName)
+            ?: return false
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return try {
             startActivity(intent)
@@ -372,11 +426,26 @@ class OperatorAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun resolveLaunchIntentByLabel(name: String): Intent? {
+        val query = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val match = packageManager.queryIntentActivities(query, 0).firstOrNull { info ->
+            info.loadLabel(packageManager).toString().equals(name, ignoreCase = true)
+        } ?: return null
+        return Intent(Intent.ACTION_MAIN)
+            .addCategory(Intent.CATEGORY_LAUNCHER)
+            .setClassName(match.activityInfo.packageName, match.activityInfo.name)
+    }
+
     /**
      * AccessibilityService.takeScreenshot (API 30+), delivered as base64 PNG.
      * The platform blocks secure windows automatically.
      */
-    fun captureScreenshotPng(onDone: (PngShot?) -> Unit) {
+    fun captureScreenshot(
+        maxDimension: Int? = null,
+        format: String = "png",
+        quality: Int = 80,
+        onDone: (PngShot?) -> Unit,
+    ) {
         if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) {
             onDone(null)
             return
@@ -399,16 +468,38 @@ class OperatorAccessibilityService : AccessibilityService() {
                             handler.post { onDone(null) }
                             return
                         }
-                        val width = bitmap.width
-                        val height = bitmap.height
+                        val sourceWidth = bitmap.width
+                        val sourceHeight = bitmap.height
+                        // Downsample before encoding: a perception call wants a
+                        // legible frame, not a 1200x2000 lossless one, and the
+                        // scale factor lets the server map points back to the
+                        // native coordinates that tap_coordinates expects.
+                        val scaled = scaleToFit(bitmap, maxDimension)
+                        val jpeg = format.equals("jpeg", ignoreCase = true)
                         val bytes = ByteArrayOutputStream().use { out ->
-                            bitmap.compress(Bitmap.CompressFormat.PNG, 80, out)
+                            scaled.compress(
+                                if (jpeg) Bitmap.CompressFormat.JPEG else Bitmap.CompressFormat.PNG,
+                                quality.coerceIn(1, 100),
+                                out,
+                            )
                             out.toByteArray()
                         }
+                        val width = scaled.width
+                        val height = scaled.height
+                        if (scaled !== bitmap) scaled.recycle()
                         bitmap.recycle()
                         val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
                         handler.post {
-                            onDone(PngShot(dataBase64 = encoded, width = width, height = height))
+                            onDone(
+                                PngShot(
+                                    format = if (jpeg) "jpeg" else "png",
+                                    dataBase64 = encoded,
+                                    width = width,
+                                    height = height,
+                                    sourceWidth = sourceWidth,
+                                    sourceHeight = sourceHeight,
+                                ),
+                            )
                         }
                     } catch (err: Exception) {
                         Log.w(TAG, "screenshot conversion failed", err)
@@ -424,6 +515,17 @@ class OperatorAccessibilityService : AccessibilityService() {
         )
     }
 
+    /** Fits the longest edge to [maxDimension], preserving aspect ratio. Returns the input when no cap applies. */
+    private fun scaleToFit(bitmap: Bitmap, maxDimension: Int?): Bitmap {
+        val cap = maxDimension ?: return bitmap
+        val longest = maxOf(bitmap.width, bitmap.height)
+        if (cap <= 0 || longest <= cap) return bitmap
+        val ratio = cap.toDouble() / longest.toDouble()
+        val width = (bitmap.width * ratio).toInt().coerceAtLeast(1)
+        val height = (bitmap.height * ratio).toInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(bitmap, width, height, true)
+    }
+
     private fun dispatchSwipe(startX: Int, startY: Int, endX: Int, endY: Int, durationMs: Long): Boolean {
         val path = Path().apply {
             moveTo(startX.toFloat(), startY.toFloat())
@@ -433,6 +535,26 @@ class OperatorAccessibilityService : AccessibilityService() {
             .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
             .build()
         return dispatchGesture(gesture, null, null)
+    }
+
+    private fun actionName(id: Int): String? = when (id) {
+        AccessibilityNodeInfo.ACTION_CLICK -> "click"
+        AccessibilityNodeInfo.ACTION_LONG_CLICK -> "long_click"
+        AccessibilityNodeInfo.ACTION_SET_TEXT -> "set_text"
+        AccessibilityNodeInfo.ACTION_SCROLL_FORWARD -> "scroll_forward"
+        AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD -> "scroll_backward"
+        AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.id -> "scroll_up"
+        AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id -> "scroll_down"
+        AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.id -> "scroll_left"
+        AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.id -> "scroll_right"
+        AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.id -> "set_progress"
+        AccessibilityNodeInfo.ACTION_SELECT -> "select"
+        AccessibilityNodeInfo.ACTION_CLEAR_SELECTION -> "clear_selection"
+        AccessibilityNodeInfo.ACTION_EXPAND -> "expand"
+        AccessibilityNodeInfo.ACTION_COLLAPSE -> "collapse"
+        AccessibilityNodeInfo.ACTION_DISMISS -> "dismiss"
+        AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id -> "show_on_screen"
+        else -> null
     }
 
     private suspend fun successWithChange(started: Long): ActionResult {
