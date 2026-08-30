@@ -5,6 +5,7 @@ import { requestPhoneApproval } from "../approvals/phone.js";
 import { requestPhoneAnswer } from "../questions/phone.js";
 import { runTurnLoopWithApprovals } from "../approvals/turn-loop.js";
 import type { DeviceGateway } from "../devices/gateway.js";
+import { createDeviceTarget } from "../devices/target.js";
 import { config } from "../config.js";
 import { ANDROID_TOOL_BRIDGE_NAME } from "../mcp/android-tools.js";
 import { trueForgeClient } from "../trueforge/client.js";
@@ -86,8 +87,9 @@ const activeRuns = new Map<string, ActiveRun>();
 const builders = new Map<string, TranscriptBuilder>();
 
 function targetBoundPrompt(prompt: string, deviceId: string): string {
-  return `[System routing context: operate only Android device ${deviceId}. Include deviceId ` +
-    `"${deviceId}" in every android-tool-bridge call.]\n\n${prompt}`;
+  const deviceTarget = createDeviceTarget(deviceId);
+  return `[System routing context: operate only the run-bound Android device. Include ` +
+    `deviceTarget "${deviceTarget}" in every android-tool-bridge call.]\n\n${prompt}`;
 }
 
 export function listDashboardRuns(): DashboardRun[] {

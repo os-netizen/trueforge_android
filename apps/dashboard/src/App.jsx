@@ -362,6 +362,11 @@ export function App() {
     setMobilePanel("workspace");
   }, []);
 
+  const changeDevice = useCallback((deviceId) => {
+    newRun();
+    setSelectedDeviceId(deviceId);
+  }, [newRun]);
+
   const selectRun = useCallback((entry) => {
     if (entry.deviceId) setSelectedDeviceId(entry.deviceId);
     setMobilePanel("workspace");
@@ -380,7 +385,7 @@ export function App() {
       <RunsSidebar
         devices={devices}
         device={device}
-        onDeviceChange={setSelectedDeviceId}
+        onDeviceChange={changeDevice}
         runs={runs}
         selectedId={selectedId}
         onSelectRun={selectRun}

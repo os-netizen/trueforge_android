@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { inspectScreenVisually } from "../vision/inspect.js";
 import { frameReference, storeFrame } from "../media/frames.js";
 import type { VisionCaller } from "../vision/client.js";
+import { resolveDeviceTarget } from "../devices/target.js";
 
 /**
  * Android Tool Bridge (handoff doc sections 10 and 11).
@@ -107,9 +108,10 @@ function assertNotConsequential(action: DeviceAction): void {
   }
 }
 
-const DeviceIdSchema = z.string().min(1).describe("The deviceId bound to this run");
+const DeviceTargetSchema = z.string().min(1).describe("The opaque deviceTarget bound to this run");
 
-function requireOnlineDevice(gateway: DeviceGatewayLike, deviceId: string): string {
+function requireOnlineDevice(gateway: DeviceGatewayLike, deviceTarget: string): string {
+  const deviceId = resolveDeviceTarget(deviceTarget);
   if (!gateway.listDevices().some((device) => device.deviceId === deviceId)) {
     throw new Error(`Unknown Android device '${deviceId}'`);
   }
@@ -244,10 +246,10 @@ export function createAndroidToolServer(
       description:
         "Preflight the Android operator and report compact response budgets and available " +
         "control planes. Call once when a task needs media or notifications.",
-      inputSchema: { deviceId: DeviceIdSchema },
+      inputSchema: { deviceTarget: DeviceTargetSchema },
     },
-    async ({ deviceId }) => {
-      requireOnlineDevice(gateway, deviceId);
+    async ({ deviceTarget }) => {
+      const deviceId = requireOnlineDevice(gateway, deviceTarget);
       const [device, media, notifications] = await Promise.all([
         gateway.sendRequest(deviceId, { type: "get_device_state" }),
         gateway.sendRequest(deviceId, { type: "get_media_state" }),
@@ -273,10 +275,10 @@ export function createAndroidToolServer(
         "Shape: {snapshotId, packageName, nodeCount, truncated, nodes:[{id, p:parentId, t:text, " +
         "d:contentDescription, f:flags(c=clickable,l=long-clickable,e=editable,s=scrollable), " +
         "b:[left,top,right,bottom]}]}. Absent fields are null. Always observe before acting.",
-      inputSchema: { deviceId: DeviceIdSchema },
+      inputSchema: { deviceTarget: DeviceTargetSchema },
     },
-    async ({ deviceId }) => {
-      requireOnlineDevice(gateway, deviceId);
+    async ({ deviceTarget }) => {
+      const deviceId = requireOnlineDevice(gateway, deviceTarget);
       const result = await gateway.sendRequest(deviceId, { type: "get_screen" });
       const snapshot = unwrap(result) as unknown as RawSnapshot;
       return {
@@ -294,15 +296,15 @@ export function createAndroidToolServer(
         "matching nodes. Prefer this over requesting or scrolling through a large tree. " +
         "Results are bounded and include the snapshotId required for node actions.",
       inputSchema: {
-        deviceId: DeviceIdSchema,
+        deviceTarget: DeviceTargetSchema,
         query: z.string().max(200).optional(),
         role: z.string().max(80).optional(),
         action: z.string().max(80).optional(),
         limit: z.number().int().min(1).max(20).default(10),
       },
     },
-    async ({ deviceId, query, role, action, limit }) => {
-      requireOnlineDevice(gateway, deviceId);
+    async ({ deviceTarget, query, role, action, limit }) => {
+      const deviceId = requireOnlineDevice(gateway, deviceTarget);
       const raw = unwrap(await gateway.sendRequest(deviceId, { type: "get_screen" })) as RawSnapshot;
       const q = query?.toLowerCase();
       const r = role?.toLowerCase();
@@ -339,11 +341,11 @@ export function createAndroidToolServer(
         "Consequential actions are refused here, including dismissing or invoking someone " +
         "else's notification: use commit_action for those, from a sandbox script too. " +
         "Returns status, screenChanged, and latency.",
-      inputSchema: { deviceId: DeviceIdSchema, action: DeviceActionSchema },
+      inputSchema: { deviceTarget: DeviceTargetSchema, action: DeviceActionSchema },
     },
-    async ({ deviceId, action }) => {
+    async ({ deviceTarget, action }) => {
       assertNotConsequential(action);
-      requireOnlineDevice(gateway, deviceId);
+      const deviceId = requireOnlineDevice(gateway, deviceTarget);
       const result = await gateway.sendRequest(deviceId, {
         type: "execute_action",
         action,
@@ -365,15 +367,15 @@ export function createAndroidToolServer(
         "`intent` must be one plain sentence describing the real-world effect, e.g. " +
         "\"Send report.pdf to Akash on WhatsApp\" — it is shown verbatim to the user.",
       inputSchema: {
-        deviceId: DeviceIdSchema,
+        deviceTarget: DeviceTargetSchema,
         intent: z.string().min(8).max(200),
         action: DeviceActionSchema,
       },
     },
     // `intent` is deliberately unused at execution time: it exists so the
     // approval surface can read clean display text off the tool-call arguments.
-    async ({ deviceId, action }) => {
-      requireOnlineDevice(gateway, deviceId);
+    async ({ deviceTarget, action }) => {
+      const deviceId = requireOnlineDevice(gateway, deviceTarget);
       const result = await gateway.sendRequest(deviceId, {
         type: "execute_action",
         action,
@@ -390,14 +392,14 @@ export function createAndroidToolServer(
         "Executes one Android action and atomically returns a bounded post-action screen " +
         "summary after the UI settles. Prefer this for navigation to reduce races and tool calls.",
       inputSchema: {
-        deviceId: DeviceIdSchema,
+        deviceTarget: DeviceTargetSchema,
         action: DeviceActionSchema,
         settleMs: z.number().int().min(0).max(3000).default(350),
       },
     },
-    async ({ deviceId, action, settleMs }) => {
+    async ({ deviceTarget, action, settleMs }) => {
       assertNotConsequential(action);
-      requireOnlineDevice(gateway, deviceId);
+      const deviceId = requireOnlineDevice(gateway, deviceTarget);
       const actionResult = unwrap(await gateway.sendRequest(deviceId, {
         type: "execute_action",
         action,
@@ -421,16 +423,16 @@ export function createAndroidToolServer(
         "Waits without model polling until a package or node text appears. Returns a small " +
         "matching result, not repeated screen dumps.",
       inputSchema: {
-        deviceId: DeviceIdSchema,
+        deviceTarget: DeviceTargetSchema,
         packageName: z.string().optional(),
         text: z.string().max(200).optional(),
         timeoutMs: z.number().int().min(100).max(15000).default(5000),
         pollMs: z.number().int().min(100).max(2000).default(300),
       },
     },
-    async ({ deviceId, packageName, text: wantedText, timeoutMs, pollMs }) => {
+    async ({ deviceTarget, packageName, text: wantedText, timeoutMs, pollMs }) => {
       if (!packageName && !wantedText) throw new Error("packageName or text is required");
-      requireOnlineDevice(gateway, deviceId);
+      const deviceId = requireOnlineDevice(gateway, deviceTarget);
       const deadline = Date.now() + timeoutMs;
       let last: RawSnapshot | null = null;
       while (Date.now() <= deadline) {
@@ -467,10 +469,10 @@ export function createAndroidToolServer(
         "position, duration, and supported transport actions. Use this to verify play/pause; " +
         "do not infer playback from screenshots or timestamp nodes. If available=false, the " +
         "operator app needs notification-listener access enabled once in Android settings.",
-      inputSchema: { deviceId: DeviceIdSchema },
+      inputSchema: { deviceTarget: DeviceTargetSchema },
     },
-    async ({ deviceId }) => {
-      requireOnlineDevice(gateway, deviceId);
+    async ({ deviceTarget }) => {
+      const deviceId = requireOnlineDevice(gateway, deviceTarget);
       const response = await gateway.sendRequest(deviceId, { type: "get_media_state" });
       // Preserve a structured unavailable result so the model sees the exact remediation.
       const result = response.result ?? {
@@ -491,12 +493,12 @@ export function createAndroidToolServer(
         "Returns a bounded summary of active Android notifications and their semantic actions. " +
         "Use notification_action through execute_action to open, dismiss, or invoke one.",
       inputSchema: {
-        deviceId: DeviceIdSchema,
+        deviceTarget: DeviceTargetSchema,
         limit: z.number().int().min(1).max(30).default(15),
       },
     },
-    async ({ deviceId, limit }) => {
-      requireOnlineDevice(gateway, deviceId);
+    async ({ deviceTarget, limit }) => {
+      const deviceId = requireOnlineDevice(gateway, deviceTarget);
       const response = await gateway.sendRequest(deviceId, { type: "get_notifications" });
       const result = response.result;
       if (!Array.isArray(result)) {
@@ -530,7 +532,7 @@ export function createAndroidToolServer(
         "image is never written to disk (it is held briefly in memory so the operator's " +
         "dashboard can show what you looked at), and secure windows are blocked by Android.",
       inputSchema: {
-        deviceId: DeviceIdSchema,
+        deviceTarget: DeviceTargetSchema,
         maxDimension: z
           .number()
           .int()
@@ -540,8 +542,8 @@ export function createAndroidToolServer(
           .describe("Longest edge in pixels. Lower is cheaper; 1024 stays legible for UI."),
       },
     },
-    async ({ deviceId, maxDimension }) => {
-      requireOnlineDevice(gateway, deviceId);
+    async ({ deviceTarget, maxDimension }) => {
+      const deviceId = requireOnlineDevice(gateway, deviceTarget);
       const result = (await unwrap(
         await gateway.sendRequest(deviceId, {
           type: "capture_screenshot",
@@ -608,7 +610,7 @@ export function createAndroidToolServer(
         "this tool directly or from Code Mode; it must delegate the visual question to a " +
         "short-lived, read-only vision-recovery sub-agent. Read-only.",
       inputSchema: {
-        deviceId: DeviceIdSchema,
+        deviceTarget: DeviceTargetSchema,
         question: z
           .string()
           .min(1)
@@ -621,8 +623,8 @@ export function createAndroidToolServer(
           .describe("What you expected to be on screen, if you have a hypothesis."),
       },
     },
-    async ({ deviceId, question, expectation }) => {
-      requireOnlineDevice(gateway, deviceId);
+    async ({ deviceTarget, question, expectation }) => {
+      const deviceId = requireOnlineDevice(gateway, deviceTarget);
       const result = await inspectScreenVisually(
         gateway,
         { deviceId, question, expectation },
@@ -644,10 +646,10 @@ export function createAndroidToolServer(
       description:
         "Returns lightweight device state for verification and recovery: foreground " +
         "package, orientation, accessibility service status, last snapshot id.",
-      inputSchema: { deviceId: DeviceIdSchema },
+      inputSchema: { deviceTarget: DeviceTargetSchema },
     },
-    async ({ deviceId }) => {
-      requireOnlineDevice(gateway, deviceId);
+    async ({ deviceTarget }) => {
+      const deviceId = requireOnlineDevice(gateway, deviceTarget);
       const result = await gateway.sendRequest(deviceId, { type: "get_device_state" });
       return { content: [{ type: "text", text: JSON.stringify(unwrap(result)) }] };
     },
