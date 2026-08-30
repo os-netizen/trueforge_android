@@ -61,7 +61,7 @@ function AppNav({ mobilePanel, onMobilePanel }) {
   );
 }
 
-function RunsSidebar({ device, runs, selectedId, onSelectRun, onNewRun, onRefresh, mobileActive }) {
+function RunsSidebar({ devices, device, onDeviceChange, runs, selectedId, onSelectRun, onNewRun, onRefresh, mobileActive }) {
   return (
     <aside className={`runs-sidebar ${mobileActive ? "mobile-active" : ""}`}>
       <div className="wordmark">TrueForge <strong>Control</strong></div>
@@ -73,6 +73,16 @@ function RunsSidebar({ device, runs, selectedId, onSelectRun, onNewRun, onRefres
             <button className="icon-button" onClick={onRefresh} aria-label="Refresh device"><ArrowsClockwise /></button>
           </div>
           <div className={`device-status ${device ? "online" : "offline"}`}>{device ? "Connected" : "Offline"}</div>
+          {devices.length > 1 && (
+            <label className="device-picker">
+              <span>Operate on</span>
+              <select value={device?.deviceId || ""} onChange={(event) => onDeviceChange(event.target.value)}>
+                {devices.map((entry) => (
+                  <option key={entry.deviceId} value={entry.deviceId}>{entry.model || entry.deviceId}</option>
+                ))}
+              </select>
+            </label>
+          )}
           <dl className="device-facts">
             <div><dt>System</dt><dd>{device ? `Android ${device.androidVersion}` : "—"}</dd></div>
             <div><dt>Accessibility</dt><dd>{device?.accessibilityServiceEnabled ? "Active" : "Unavailable"}</dd></div>
@@ -161,6 +171,7 @@ function PromptComposer({ onSubmit, running, disabled, continuing }) {
 
 export function App() {
   const [status, setStatus] = useState(null);
+  const [selectedDeviceId, setSelectedDeviceId] = useState(null);
   const [deviceState, setDeviceState] = useState(null);
   const [screenshot, setScreenshot] = useState(null);
   const [runs, setRuns] = useState([]);
@@ -174,10 +185,19 @@ export function App() {
   const [loadingRun, setLoadingRun] = useState(false);
   const [mobilePanel, setMobilePanel] = useState("workspace");
   const transcriptAbort = useRef(null);
+  const inspectorRequest = useRef(0);
 
-  const device = status?.devices?.[0] || null;
+  const devices = status?.devices || [];
+  const device = devices.find((entry) => entry.deviceId === selectedDeviceId) || devices[0] || null;
+
+  useEffect(() => {
+    if (device?.deviceId && device.deviceId !== selectedDeviceId) setSelectedDeviceId(device.deviceId);
+  }, [device?.deviceId, selectedDeviceId]);
 
   const refresh = useCallback(async () => {
+    const requestId = ++inspectorRequest.current;
+    setDeviceState(null);
+    setScreenshot(null);
     try {
       const [nextStatus, runData] = await Promise.all([
         getJson("/dashboard/status"),
@@ -186,25 +206,30 @@ export function App() {
       setStatus(nextStatus);
       setRuns(runData.runs || []);
       getJson("/dashboard/analytics").then(setAnalytics).catch(() => {});
-      const nextDevice = nextStatus.devices?.[0];
+      const nextDevice = nextStatus.devices?.find((entry) => entry.deviceId === selectedDeviceId)
+        || nextStatus.devices?.[0];
       if (nextDevice) {
         const devicePath = `${API}/devices/${encodeURIComponent(nextDevice.deviceId)}`;
         void fetch(`${devicePath}/state`, { signal: AbortSignal.timeout(5000) })
           .then((response) => (response.ok ? response.json() : null))
-          .then((body) => body && setDeviceState(body))
+          .then((body) => {
+            if (body && inspectorRequest.current === requestId) setDeviceState(body);
+          })
           .catch(() => {});
         void fetch(`${devicePath}/screenshot`, { signal: AbortSignal.timeout(7000) })
           .then((response) => (response.ok ? response.json() : null))
           .then((body) => {
             const result = body?.result || body;
-            if (result?.dataBase64) setScreenshot(`data:image/png;base64,${result.dataBase64}`);
+            if (result?.dataBase64 && inspectorRequest.current === requestId) {
+              setScreenshot(`data:image/png;base64,${result.dataBase64}`);
+            }
           })
           .catch(() => {});
       }
     } catch (error) {
       setStatus((current) => ({ ...(current || {}), ok: false, error: error.message }));
     }
-  }, []);
+  }, [selectedDeviceId]);
 
   useEffect(() => {
     refresh();
@@ -270,6 +295,7 @@ export function App() {
 
     const optimistic = {
       id: continuingId || `local-${Date.now()}`,
+      deviceId: continuingId ? run.deviceId : device?.deviceId,
       prompt,
       title: continuingId ? run.title : prompt,
       status: "starting",
@@ -282,7 +308,11 @@ export function App() {
     setRuns((current) => [optimistic, ...current.filter((entry) => entry.id !== optimistic.id)].slice(0, 20));
 
     try {
-      const response = await startRun({ prompt, runId: continuingId }, controller.signal);
+      const targetDeviceId = continuingId ? run.deviceId : device?.deviceId;
+      const response = await startRun(
+        { prompt, runId: continuingId, deviceId: targetDeviceId },
+        controller.signal,
+      );
       if (!response.ok || !response.body) {
         throw new Error((await response.json().catch(() => ({}))).error || "Could not start run");
       }
@@ -325,7 +355,7 @@ export function App() {
         refresh();
       }
     }
-  }, [run, running, refresh]);
+  }, [run, running, refresh, device?.deviceId]);
 
   const stopRun = useCallback(() => {
     if (run?.id) cancelRun(run.id).catch(() => {});
@@ -340,7 +370,16 @@ export function App() {
     setMobilePanel("workspace");
   }, []);
 
+  const changeDevice = useCallback((deviceId) => {
+    inspectorRequest.current += 1;
+    setDeviceState(null);
+    setScreenshot(null);
+    newRun();
+    setSelectedDeviceId(deviceId);
+  }, [newRun]);
+
   const selectRun = useCallback((entry) => {
+    if (entry.deviceId) setSelectedDeviceId(entry.deviceId);
     setMobilePanel("workspace");
     loadRun(entry.id);
   }, [loadRun]);
@@ -355,7 +394,9 @@ export function App() {
     <div className="app-shell">
       <AppNav mobilePanel={mobilePanel} onMobilePanel={setMobilePanel} />
       <RunsSidebar
+        devices={devices}
         device={device}
+        onDeviceChange={changeDevice}
         runs={runs}
         selectedId={selectedId}
         onSelectRun={selectRun}

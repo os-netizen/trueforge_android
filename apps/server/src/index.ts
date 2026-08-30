@@ -209,9 +209,15 @@ async function handleApi(
     for await (const chunk of req) raw += chunk;
     let prompt = "";
     let runId: string | undefined;
+    let deviceId = "";
     try {
-      const parsed = JSON.parse(raw || "{}") as { prompt?: unknown; runId?: unknown };
+      const parsed = JSON.parse(raw || "{}") as {
+        prompt?: unknown;
+        runId?: unknown;
+        deviceId?: unknown;
+      };
       prompt = typeof parsed.prompt === "string" ? parsed.prompt.trim() : "";
+      deviceId = typeof parsed.deviceId === "string" ? parsed.deviceId.trim() : "";
       // A follow-up carries the run it continues; without it the agent would
       // start a fresh TrueForge session and lose the device context.
       runId = typeof parsed.runId === "string" && parsed.runId ? parsed.runId : undefined;
@@ -219,14 +225,22 @@ async function handleApi(
       return send(400, { error: "invalid JSON body" });
     }
     if (!prompt) return send(400, { error: "prompt is required" });
+    if (!deviceId) return send(400, { error: "deviceId is required" });
     if (prompt.length > 4000) return send(400, { error: "prompt is too long" });
-    if (runId && !findDashboardRun(runId)) {
+    const existingRun = runId ? findDashboardRun(runId) : undefined;
+    if (runId && !existingRun) {
       return send(404, { error: "unknown run to continue" });
     }
+    if (existingRun?.deviceId && existingRun.deviceId !== deviceId) {
+      return send(409, {
+        error: `Run '${existingRun.id}' is bound to device '${existingRun.deviceId}', not '${deviceId}'`,
+      });
+    }
+    if (!gateway.isOnline(deviceId)) return send(409, { error: `Device '${deviceId}' is offline` });
     if (runId && isRunLive(runId)) {
       return send(409, { error: "run is still in progress" });
     }
-    return streamDashboardRun(prompt, res, gateway, { runId });
+    return streamDashboardRun(prompt, res, gateway, { runId, deviceId });
   }
 
   // Transcript for one run: replayed live for an in-flight run, rebuilt from

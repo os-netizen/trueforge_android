@@ -6,10 +6,10 @@ const GATEWAY_SLACK_MS = 5_000;
 
 export async function requestPhoneAnswer(
   gateway: DeviceGateway,
+  deviceId: string,
   info: PendingQuestionInfo,
 ): Promise<QuestionOutcome> {
-  const deviceId = gateway.listDevices().find((device) => gateway.isOnline(device.deviceId))?.deviceId;
-  if (!deviceId) throw new Error("No Android device was connected to answer the question");
+  if (!gateway.isOnline(deviceId)) throw new Error(`Selected Android device '${deviceId}' is offline`);
 
   const response = await gateway.sendRequest(deviceId, {
     type: "request_user_question",

@@ -27,7 +27,10 @@ import java.util.concurrent.TimeUnit
  * dashboard consumer: split on newlines, JSON-parse non-empty lines, tolerate
  * a trailing partial line and skip anything unparseable.
  */
-class TaskRunClient(private val serverUrlProvider: () -> String) {
+class TaskRunClient(
+    private val serverUrlProvider: () -> String,
+    private val deviceIdProvider: () -> String,
+) {
 
     /**
      * Minimal projection of an NDJSON envelope. Payload shapes vary across
@@ -216,7 +219,10 @@ class TaskRunClient(private val serverUrlProvider: () -> String) {
         val base = baseHttpUrl(serverUrlProvider())
         val body = json.encodeToString(
             JsonObject.serializer(),
-            JsonObject(mapOf("prompt" to JsonPrimitive(prompt))),
+            JsonObject(mapOf(
+                "prompt" to JsonPrimitive(prompt),
+                "deviceId" to JsonPrimitive(deviceIdProvider()),
+            )),
         ).toRequestBody(JSON_MEDIA_TYPE)
         val request = Request.Builder()
             .url("$base/api/dashboard/runs")

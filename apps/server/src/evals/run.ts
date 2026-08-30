@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { runTurnLoopWithApprovals } from "../approvals/turn-loop.js";
 import { config } from "../config.js";
 import { ANDROID_TOOL_BRIDGE_NAME } from "../mcp/android-tools.js";
+import { createDeviceTarget } from "../devices/target.js";
 import { trueForgeClient } from "../trueforge/client.js";
 import {
   ensureAgent,
@@ -130,7 +131,9 @@ async function runCase(testCase: AndroidEvalCase): Promise<boolean> {
     loop = await runTurnLoopWithApprovals({
       client,
       sessionId: session.data.id,
-      prompt: testCase.prompt,
+      prompt: `[System routing context: include deviceTarget ` +
+        `"${createDeviceTarget(deviceId)}" in every ` +
+        `android-tool-bridge call.]\n\n${testCase.prompt}`,
       decide: async (info) => {
         const decision = testCase.approvalDecision?.({
           intent: info.intent,

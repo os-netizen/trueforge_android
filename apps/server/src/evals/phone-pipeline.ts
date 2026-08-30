@@ -61,6 +61,7 @@ async function preflight(): Promise<{ deviceId: string }> {
  */
 async function streamRun(
   prompt: string,
+  deviceId: string,
   onEnvelope?: (envelope: Envelope) => void | Promise<void>,
 ): Promise<Envelope[]> {
   const controller = new AbortController();
@@ -70,7 +71,7 @@ async function streamRun(
     const response = await fetch(`${DEVICE_API_BASE_URL}/api/dashboard/runs`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, deviceId }),
       signal: controller.signal,
     });
     if (!response.ok || !response.body) {
@@ -128,7 +129,7 @@ function terminalOf(envelopes: Envelope[]): Envelope | undefined {
 async function evalPhoneRun(): Promise<{ passed: boolean; checks: Check[]; output?: string }> {
   const { deviceId } = await preflight();
   const checks: Check[] = [];
-  const envelopes = await streamRun(TASK_PROMPT);
+  const envelopes = await streamRun(TASK_PROMPT, deviceId);
   const types = envelopes.map((e) => e.type);
 
   const createdIndex = types.indexOf("run.created");
@@ -182,13 +183,13 @@ async function evalPhoneRun(): Promise<{ passed: boolean; checks: Check[]; outpu
 // --- Eval B ---------------------------------------------------------------
 
 async function evalCancel(): Promise<{ passed: boolean; checks: Check[] }> {
-  await preflight();
+  const { deviceId } = await preflight();
   const checks: Check[] = [];
 
   let runId: string | undefined;
   let cancelStatus: number | undefined;
   let cancelledAt = 0;
-  const envelopes = await streamRun(LONG_PROMPT, async (envelope) => {
+  const envelopes = await streamRun(LONG_PROMPT, deviceId, async (envelope) => {
     if (envelope.type === "run.started" && !runId) {
       runId = String(envelope.data.id ?? "");
       cancelledAt = Date.now();
@@ -226,7 +227,7 @@ async function evalCancel(): Promise<{ passed: boolean; checks: Check[] }> {
   );
 
   // Cancelling a session must not wedge the server for the next run.
-  const followUp = await streamRun("Report which app is currently in the foreground.");
+  const followUp = await streamRun("Report which app is currently in the foreground.", deviceId);
   const followUpTerminal = terminalOf(followUp);
   check(
     checks,

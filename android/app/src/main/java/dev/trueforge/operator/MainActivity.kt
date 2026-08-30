@@ -50,7 +50,12 @@ class MainActivity : ComponentActivity() {
     private var task by mutableStateOf(TaskUiState())
 
     /** Phone-initiated runs go through the same server pipeline as the dashboard. */
-    private val runClient = TaskRunClient { serverUrl }
+    private val runClient by lazy {
+        TaskRunClient(
+            serverUrlProvider = { serverUrl },
+            deviceIdProvider = { DeviceConnectionService.deviceId(this) },
+        )
+    }
     private var runJob: Job? = null
     private var agentEventCount = 0
     private var stopRequested = false

@@ -5,6 +5,7 @@ import { requestPhoneApproval } from "../approvals/phone.js";
 import { requestPhoneAnswer } from "../questions/phone.js";
 import { runTurnLoopWithApprovals } from "../approvals/turn-loop.js";
 import type { DeviceGateway } from "../devices/gateway.js";
+import { createDeviceTarget } from "../devices/target.js";
 import { config } from "../config.js";
 import { ANDROID_TOOL_BRIDGE_NAME } from "../mcp/android-tools.js";
 import { trueForgeClient } from "../trueforge/client.js";
@@ -37,6 +38,7 @@ const MAX_RAW_EVENTS = 4000;
 
 export interface DashboardRun {
   id: string;
+  deviceId?: string;
   sessionId?: string;
   prompt: string;
   /** First prompt of the conversation; the sidebar label. */
@@ -83,6 +85,12 @@ const activeRuns = new Map<string, ActiveRun>();
  * tool-call correlation carried over from the earlier turns.
  */
 const builders = new Map<string, TranscriptBuilder>();
+
+function targetBoundPrompt(prompt: string, deviceId: string): string {
+  const deviceTarget = createDeviceTarget(deviceId);
+  return `[System routing context: operate only the run-bound Android device. Include ` +
+    `deviceTarget "${deviceTarget}" in every android-tool-bridge call.]\n\n${prompt}`;
+}
 
 export function listDashboardRuns(): DashboardRun[] {
   return runs.slice(0, 20);
@@ -386,23 +394,31 @@ function median(values: number[]): number | null {
 export interface StreamRunOptions {
   /** Continue this run's TrueForge session instead of creating a new one. */
   runId?: string;
+  /** Device selected when the run was created. Immutable across follow-ups. */
+  deviceId: string;
 }
 
 export async function streamDashboardRun(
   prompt: string,
   res: ServerResponse,
   gateway: DeviceGateway,
-  options: StreamRunOptions = {},
+  options: StreamRunOptions,
 ): Promise<void> {
   // A follow-up prompt must land on the same TrueForge session, or the agent
   // loses everything it just observed on the device and starts from scratch.
   const existing = options.runId ? findDashboardRun(options.runId) : undefined;
+  if (existing?.deviceId && existing.deviceId !== options.deviceId) {
+    throw new Error(
+      `Run '${existing.id}' is bound to device '${existing.deviceId}', not '${options.deviceId}'`,
+    );
+  }
   const continuing = Boolean(existing?.sessionId) && !activeRuns.has(existing!.id);
 
   const run: DashboardRun = continuing
     ? existing!
     : {
       id: randomUUID(),
+      deviceId: options.deviceId,
       prompt,
       title: prompt,
       status: "starting",
@@ -411,6 +427,7 @@ export async function streamDashboardRun(
       turnCount: 0,
     };
   if (continuing) {
+    run.deviceId ??= options.deviceId;
     run.prompt = prompt;
     run.status = "starting";
     run.finishedAt = undefined;
@@ -476,7 +493,7 @@ export async function streamDashboardRun(
     const result = await runTurnLoopWithApprovals({
       client,
       sessionId: run.sessionId,
-      prompt,
+      prompt: targetBoundPrompt(prompt, run.deviceId!),
       onEvent: (event) => {
         run.eventCount += 1;
         if (active.raw.length < MAX_RAW_EVENTS) active.raw.push(event);
@@ -491,8 +508,8 @@ export async function streamDashboardRun(
         });
         emitItems(builder.approvalPending(info.toolCallId, info.intent));
       },
-      decide: (info) => requestPhoneApproval(gateway, info),
-      answer: (info) => requestPhoneAnswer(gateway, info),
+      decide: (info) => requestPhoneApproval(gateway, run.deviceId!, info),
+      answer: (info) => requestPhoneAnswer(gateway, run.deviceId!, info),
       onQuestionPending: (info) => {
         broadcast("question.pending", {
           runId: run.id,

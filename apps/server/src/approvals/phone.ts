@@ -15,11 +15,11 @@ const GATEWAY_SLACK_MS = 5_000;
  */
 export async function requestPhoneApproval(
   gateway: DeviceGateway,
+  deviceId: string,
   info: PendingApprovalInfo,
 ): Promise<ApprovalOutcome> {
-  const deviceId = gateway.listDevices().find((d) => gateway.isOnline(d.deviceId))?.deviceId;
-  if (!deviceId) {
-    return { decision: "deny", reason: "No Android device was connected to approve the action" };
+  if (!gateway.isOnline(deviceId)) {
+    return { decision: "deny", reason: `Selected Android device '${deviceId}' is offline` };
   }
 
   let response;
