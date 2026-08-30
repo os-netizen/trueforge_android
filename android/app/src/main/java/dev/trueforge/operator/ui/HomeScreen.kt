@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -38,6 +39,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,9 +50,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.trueforge.operator.ui.theme.ColorSchemeReady
 import dev.trueforge.operator.ui.theme.PillShape
+import kotlinx.coroutines.delay
 
 /**
  * The only screen most sessions ever need: say what you want, watch it happen.
@@ -72,7 +78,7 @@ fun HomeScreen(
     onClearResult: () -> Unit,
 ) {
     val hasRunSurface = task.runActive ||
-        task.log.isNotEmpty() ||
+        task.steps.isNotEmpty() ||
         task.output != null ||
         task.error != null
 
@@ -100,7 +106,8 @@ fun HomeScreen(
         Box(
             modifier = Modifier
                 .weight(1f)
-                .fillMaxWidth(),
+                .fillMaxWidth()
+                .padding(top = 20.dp),
             contentAlignment = Alignment.Center,
         ) {
             if (hasRunSurface) {
@@ -274,43 +281,38 @@ private fun PulseRing(delayMillis: Int) {
 }
 
 /**
- * Live run surface: what the agent is doing now, the trailing few steps, and
- * the final answer. Scrolls independently so the composer never moves.
+ * Live run surface: what the agent is doing now, every step it took to get
+ * there, and the final answer. Scrolls independently so the composer never
+ * moves, and follows the newest step so the phone can be watched hands-off.
  */
 @Composable
 private fun RunPanel(task: TaskUiState, onClearResult: () -> Unit) {
     val scroll = rememberScrollState()
+
+    // Chronological, newest last — the reading order everyone already has for
+    // a transcript — so following it means staying pinned to the bottom.
+    LaunchedEffect(task.steps.size, task.output, task.error) {
+        scroll.animateScrollTo(scroll.maxValue)
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(scroll),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        if (task.statusLine.isNotEmpty()) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                StatusDot(
-                    tint = if (task.runActive) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                    pulsing = task.runActive,
-                )
-                Text(task.statusLine, style = MaterialTheme.typography.titleMedium)
-            }
-        }
+        RunHeader(task)
 
-        // Newest first: the current step is the one worth reading, and the
-        // older lines fade out rather than competing with it.
-        task.log.asReversed().take(8).forEachIndexed { index, line ->
-            Text(
-                line,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
-                    alpha = 1f - (index * 0.11f),
-                ),
-                modifier = Modifier.padding(start = 18.dp),
-            )
+        if (task.steps.isNotEmpty()) {
+            Column(Modifier.fillMaxWidth()) {
+                task.steps.forEachIndexed { index, step ->
+                    StepRow(
+                        step = step,
+                        isLast = index == task.steps.lastIndex,
+                        isCurrent = task.runActive && index == task.steps.lastIndex,
+                    )
+                }
+            }
         }
 
         AnimatedVisibility(
@@ -340,6 +342,118 @@ private fun RunPanel(task: TaskUiState, onClearResult: () -> Unit) {
         }
 
         Spacer(Modifier.height(4.dp))
+    }
+}
+
+/** What the agent is doing right now, and how long it has been at it. */
+@Composable
+private fun RunHeader(task: TaskUiState) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            task.statusLine.ifEmpty { if (task.runActive) "Working" else "Finished" },
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Text(
+            runSubtitle(task),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** "8 steps · 1m 04s" — the two numbers worth glancing at mid-run. */
+@Composable
+private fun runSubtitle(task: TaskUiState): String {
+    val steps = task.steps.count { it.kind == RunStep.Kind.Tool }
+    val stepText = when (steps) {
+        0 -> "no steps yet"
+        1 -> "1 step"
+        else -> "$steps steps"
+    }
+    val startedAt = task.startedAtMs ?: return stepText
+
+    // Recomposes once a second while the run is live, and freezes the moment
+    // it ends so the final duration stays on screen.
+    var nowMs by remember(startedAt) { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(startedAt, task.runActive) {
+        while (task.runActive) {
+            nowMs = System.currentTimeMillis()
+            delay(1000)
+        }
+        nowMs = System.currentTimeMillis()
+    }
+    return "$stepText · ${formatElapsed(nowMs - startedAt)}"
+}
+
+private fun formatElapsed(millis: Long): String {
+    val seconds = (millis / 1000).coerceAtLeast(0)
+    return if (seconds < 60) "${seconds}s" else "${seconds / 60}m ${"%02d".format(seconds % 60)}s"
+}
+
+/**
+ * One timeline entry: a rail dot joined to the next by a hairline, the human
+ * description, and the tool that produced it in a monospace chip for anyone
+ * who wants to match it against the dashboard.
+ */
+@Composable
+private fun StepRow(step: RunStep, isLast: Boolean, isCurrent: Boolean) {
+    val accent = when (step.kind) {
+        RunStep.Kind.Tool ->
+            if (isCurrent) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.outline
+        RunStep.Kind.Approval, RunStep.Kind.Question -> MaterialTheme.colorScheme.primary
+        RunStep.Kind.Failure -> MaterialTheme.colorScheme.error
+    }
+    Row(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.width(22.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Box(Modifier.padding(top = 5.dp)) {
+                StatusDot(tint = accent, pulsing = isCurrent, size = if (isCurrent) 9 else 7)
+            }
+            if (!isLast) {
+                Box(
+                    Modifier
+                        .width(1.dp)
+                        .weight(1f)
+                        .padding(top = 4.dp)
+                        .background(MaterialTheme.colorScheme.outline),
+                )
+            }
+        }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 10.dp, bottom = if (isLast) 0.dp else 14.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(
+                step.detail ?: step.title,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (isCurrent || step.kind != RunStep.Kind.Tool) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            // The description replaces the title in the lead line, so the
+            // title moves down beside the tool name rather than being lost.
+            val secondary = listOfNotNull(
+                step.title.takeIf { step.detail != null },
+                step.toolName,
+            )
+            if (secondary.isNotEmpty()) {
+                Text(
+                    secondary.joinToString(" · "),
+                    style = MaterialTheme.typography.labelMedium
+                        .copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
     }
 }
 

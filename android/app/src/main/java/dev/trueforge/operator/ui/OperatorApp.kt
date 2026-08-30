@@ -28,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,7 +50,9 @@ data class TaskUiState(
     val runActive: Boolean = false,
     val runId: String? = null,
     val statusLine: String = "",
-    val log: List<String> = emptyList(),
+    val steps: List<RunStep> = emptyList(),
+    /** Wall-clock start of the current run, for the elapsed readout. */
+    val startedAtMs: Long? = null,
     val output: String? = null,
     val error: String? = null,
     val micAvailable: Boolean = false,
@@ -95,7 +98,9 @@ fun OperatorApp(
     onClearResult: () -> Unit = {},
 ) {
     TrueForgeTheme {
-        var screen by remember { mutableStateOf(Screen.Home) }
+        // Saveable, not remembered: a rotation must not drop the user back
+        // to Home and throw away the Settings composition with it.
+        var screen by rememberSaveable { mutableStateOf(Screen.Home) }
         val ready = connected && serviceRunning
 
         BackHandler(enabled = screen == Screen.Settings) { screen = Screen.Home }
