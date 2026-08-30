@@ -131,7 +131,11 @@ test("actions require verified postconditions", () => {
 test("recovery has one semantic attempt budget", () => {
   assert.match(
     ANDROID_OPERATOR_INSTRUCTIONS,
-    /Count coordinate retries, vision retries, alternate tools, and schema mistakes toward the same maximum of three failed attempts/,
+    /Count coordinate retries, vision retries, alternate tools, schema mistakes, and re-observation loops[\s\S]*toward the same maximum of three failed attempts/,
+  );
+  assert.match(
+    ANDROID_OPERATOR_INSTRUCTIONS,
+    /two observations in a row have failed to advance the step[\s\S]*change perception path/,
   );
   assert.match(
     ANDROID_OPERATOR_INSTRUCTIONS,

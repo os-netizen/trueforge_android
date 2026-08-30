@@ -112,6 +112,12 @@ Screenshots never travel through the transcript. `tool.response.content` is a st
 
 Sub-agent threads render as nested containers. `thread.created`/`thread.done` fold into one `subagent` transcript item placed on the *parent's* thread, and `groupByThread` in `apps/dashboard/src/transcript-tree.js` nests every item carrying that `threadId` inside it. An item on a thread with no container (a viewer that attached mid-run) stays on the main line rather than disappearing.
 
+## Snapshots go stale on every observation
+
+The phone keeps exactly one live snapshot (`captured` in `OperatorAccessibilityService.kt`). `get_screen`, `find_nodes`, `wait_for` and `execute_and_observe` all take one, so the ordinary observe → search → act sequence hands the device an id it has already discarded and the action is dropped with `stale_snapshot`. Node ids are positional within a snapshot, so replaying the same id against the fresh tree can press a different node.
+
+`android-tools.ts` therefore caches the last 12 observed trees and, on `stale_snapshot`, re-observes and re-resolves the node by identity — class, view id, text, contentDescription, deliberately not bounds or id — retrying only on a unique match and reporting `staleSnapshotRecovery`. A `stale_snapshot` that still reaches the model now means the node is genuinely gone or ambiguous. `commit_action` is excluded on purpose: the approved intent names a specific target, so silently re-pointing it would move what the user approved.
+
 ## TrueForge tool-response limits
 
 The installed TrueForge runtime's `LargeToolResponse` implementation uses an approximately 6,000-token threshold for one tool response and 10,000 tokens cumulatively, retaining only a tiny leading/trailing preview when offloading. Keep ordinary MCP responses bounded and compact, search full data server-side, and expose explicit paged/search tools instead of returning an unbounded accessibility tree.

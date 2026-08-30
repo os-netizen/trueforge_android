@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { compactSnapshot, createAndroidToolServer, type DeviceGatewayLike } from "./android-tools.js";
+import {
+  clearSnapshotCache,
+  compactSnapshot,
+  createAndroidToolServer,
+  type DeviceGatewayLike,
+} from "./android-tools.js";
 import { createDeviceTarget } from "../devices/target.js";
 
 const TABLET_TARGET = createDeviceTarget("tablet-1");
@@ -230,4 +235,150 @@ test("commit_action still performs the dismissal the ungated tools refuse", asyn
 
   assert.notEqual(result.isError, true);
   assert.equal(sent.length, 1);
+});
+
+/**
+ * The Amazon runs lost iterations to this exact cycle: observe, search (which
+ * silently replaces the device's live snapshot), act on the older id, get
+ * stale_snapshot, re-observe, retry. The bridge now closes it itself.
+ */
+function stalingGateway(snapshots: Array<Record<string, unknown>>): {
+  gateway: DeviceGatewayLike;
+  sent: RecordedRequest[];
+} {
+  const sent: RecordedRequest[] = [];
+  // The cache is process-wide; each scenario reuses snapshot ids.
+  clearSnapshotCache();
+  let observed = -1;
+  return {
+    sent,
+    gateway: {
+      listDevices: () => [{ deviceId: "tablet-1" }],
+      isOnline: () => true,
+      sendRequest: async (deviceId, request, opts) => {
+        sent.push({ deviceId, request, opts });
+        if (request.type === "get_screen") {
+          observed = Math.min(observed + 1, snapshots.length - 1);
+          return { ok: true, result: snapshots[observed] };
+        }
+        const action = request.action as { snapshotId?: string };
+        const live = snapshots[observed] as { snapshotId?: string } | undefined;
+        if (action?.snapshotId !== undefined && action.snapshotId !== live?.snapshotId) {
+          return { ok: true, result: { status: "stale_snapshot", screenChanged: false } };
+        }
+        return { ok: true, result: { status: "success", screenChanged: true } };
+      },
+    },
+  };
+}
+
+function snapshot(id: string, nodes: Array<Record<string, unknown>>): Record<string, unknown> {
+  return { deviceId: "tablet-1", snapshotId: id, packageName: "com.shop", timestamp: 0, nodes };
+}
+
+const CART_BUTTON = { className: "android.widget.Button", viewId: "add_to_cart", text: "Add to cart", contentDescription: null, bounds: [0, 100, 200, 160] };
+const BANNER = { className: "android.widget.TextView", viewId: "banner", text: "Sponsored", contentDescription: null, bounds: [0, 0, 200, 80] };
+
+test("a node action re-targets itself when the snapshot was replaced", async () => {
+  // n2 in snap_1 is the cart button; after the refresh it is n1, so replaying
+  // the raw id would have pressed the banner instead.
+  const { gateway, sent } = stalingGateway([
+    snapshot("snap_1", [{ id: "n1", ...BANNER }, { id: "n2", ...CART_BUTTON }]),
+    snapshot("snap_2", [{ id: "n1", ...CART_BUTTON }, { id: "n2", ...BANNER }]),
+  ]);
+  const client = await connectedClient(gateway);
+  await client.callTool({ name: "get_screen", arguments: { deviceTarget: TABLET_TARGET } });
+  // find_nodes takes a second observation, invalidating snap_1 on the device.
+  await client.callTool({ name: "find_nodes", arguments: { deviceTarget: TABLET_TARGET, query: "cart" } });
+
+  const result = await client.callTool({
+    name: "execute_action",
+    arguments: {
+      deviceTarget: TABLET_TARGET,
+      action: { type: "click_node", snapshotId: "snap_1", nodeId: "n2" },
+    },
+  });
+
+  const payload = JSON.parse(textOf(result)) as Record<string, unknown>;
+  assert.equal(payload.status, "success");
+  assert.deepEqual(payload.staleSnapshotRecovery, {
+    fromSnapshotId: "snap_1",
+    toSnapshotId: "snap_2",
+    fromNodeId: "n2",
+    toNodeId: "n1",
+  });
+  const clicks = sent.filter((s) => s.request.type === "execute_action");
+  assert.equal(clicks.length, 2);
+  assert.deepEqual(clicks[1]?.request.action, {
+    type: "click_node",
+    snapshotId: "snap_2",
+    nodeId: "n1",
+  });
+});
+
+test("a vanished node still reports stale_snapshot rather than acting on a guess", async () => {
+  const { gateway } = stalingGateway([
+    snapshot("snap_1", [{ id: "n1", ...BANNER }, { id: "n2", ...CART_BUTTON }]),
+    snapshot("snap_2", [{ id: "n1", ...BANNER }]),
+  ]);
+  const client = await connectedClient(gateway);
+  await client.callTool({ name: "get_screen", arguments: { deviceTarget: TABLET_TARGET } });
+  await client.callTool({ name: "find_nodes", arguments: { deviceTarget: TABLET_TARGET, query: "cart" } });
+
+  const result = await client.callTool({
+    name: "execute_and_observe",
+    arguments: {
+      deviceTarget: TABLET_TARGET,
+      action: { type: "click_node", snapshotId: "snap_1", nodeId: "n2" },
+      settleMs: 0,
+    },
+  });
+
+  const payload = JSON.parse(textOf(result)) as { action: { status: string }; staleSnapshotRecovery?: unknown };
+  assert.equal(payload.action.status, "stale_snapshot");
+  assert.equal(payload.staleSnapshotRecovery, undefined);
+});
+
+test("an ambiguous identity is not re-targeted", async () => {
+  const { gateway } = stalingGateway([
+    snapshot("snap_1", [{ id: "n1", ...CART_BUTTON }]),
+    snapshot("snap_2", [{ id: "n1", ...CART_BUTTON }, { id: "n2", ...CART_BUTTON }]),
+  ]);
+  const client = await connectedClient(gateway);
+  await client.callTool({ name: "get_screen", arguments: { deviceTarget: TABLET_TARGET } });
+  await client.callTool({ name: "find_nodes", arguments: { deviceTarget: TABLET_TARGET, query: "cart" } });
+
+  const result = await client.callTool({
+    name: "execute_action",
+    arguments: {
+      deviceTarget: TABLET_TARGET,
+      action: { type: "click_node", snapshotId: "snap_1", nodeId: "n1" },
+    },
+  });
+
+  const payload = JSON.parse(textOf(result)) as Record<string, unknown>;
+  assert.equal(payload.status, "stale_snapshot");
+  assert.equal(payload.staleSnapshotRecovery, undefined);
+});
+
+test("a scroll with no node only needs the current snapshot id", async () => {
+  const { gateway, sent } = stalingGateway([
+    snapshot("snap_1", [{ id: "n1", ...BANNER }]),
+    snapshot("snap_2", [{ id: "n1", ...BANNER }]),
+  ]);
+  const client = await connectedClient(gateway);
+  await client.callTool({ name: "get_screen", arguments: { deviceTarget: TABLET_TARGET } });
+  await client.callTool({ name: "find_nodes", arguments: { deviceTarget: TABLET_TARGET } });
+
+  const result = await client.callTool({
+    name: "execute_action",
+    arguments: {
+      deviceTarget: TABLET_TARGET,
+      action: { type: "scroll", snapshotId: "snap_1", direction: "down" },
+    },
+  });
+
+  assert.equal((JSON.parse(textOf(result)) as { status: string }).status, "success");
+  const scrolls = sent.filter((s) => s.request.type === "execute_action");
+  assert.equal((scrolls[1]?.request.action as { snapshotId: string }).snapshotId, "snap_2");
 });

@@ -194,6 +194,145 @@ export function compactSnapshot(raw: RawSnapshot): Record<string, unknown> {
   };
 }
 
+/**
+ * Recently observed snapshots, so a stale node action can be re-targeted.
+ *
+ * The phone keeps exactly one live snapshot: every `get_screen` replaces it,
+ * and `find_nodes`, `execute_and_observe` and `wait_for` all take one
+ * internally. So an agent that observes, searches, then acts is holding an id
+ * the device has already discarded, and the action comes back
+ * `stale_snapshot` having done nothing. That cost real iterations on the
+ * Amazon runs. Node ids are positional within their snapshot, so replaying the
+ * same id against the fresh one could hit a different node - we keep the
+ * observed trees here instead and re-resolve by node identity.
+ */
+const snapshotCache = new Map<string, RawSnapshot>();
+const MAX_CACHED_SNAPSHOTS = 12;
+
+function rememberSnapshot(deviceId: string, raw: RawSnapshot): RawSnapshot {
+  const key = `${deviceId}:${raw.snapshotId}`;
+  snapshotCache.delete(key);
+  snapshotCache.set(key, raw);
+  while (snapshotCache.size > MAX_CACHED_SNAPSHOTS) {
+    const oldest = snapshotCache.keys().next().value;
+    if (oldest === undefined) break;
+    snapshotCache.delete(oldest);
+  }
+  return raw;
+}
+
+/** Exported for tests: the cache is process-wide and must not leak between them. */
+export function clearSnapshotCache(): void {
+  snapshotCache.clear();
+}
+
+/**
+ * What makes a node the *same* node across two observations of one screen.
+ *
+ * Deliberately excludes bounds and id: a scroll moves a row and renumbers the
+ * tree, but the label, view id and class of the thing the agent chose do not
+ * change. An empty signature identifies nothing, so it never matches.
+ */
+function nodeIdentity(node: RawSnapNode): string | null {
+  const parts = [
+    node.className ?? "",
+    node.viewId ?? "",
+    node.text ?? "",
+    node.contentDescription ?? "",
+  ];
+  return parts.some((p) => p !== "") ? parts.join(" ") : null;
+}
+
+interface StaleRecovery {
+  /** The same action, re-pointed at the snapshot the device currently holds. */
+  action: DeviceAction;
+  fromSnapshotId: string;
+  toSnapshotId: string;
+  fromNodeId?: string;
+  toNodeId?: string;
+}
+
+function isStaleSnapshot(result: unknown): boolean {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    (result as { status?: unknown }).status === "stale_snapshot"
+  );
+}
+
+/**
+ * Re-points a node action at the device's current snapshot, or gives up.
+ *
+ * Only an unambiguous match is accepted: if the node the agent named is gone,
+ * or its identity now matches several nodes, we return null and the caller
+ * surfaces the original `stale_snapshot` rather than acting on a guess.
+ */
+async function reResolveStaleAction(
+  gateway: DeviceGatewayLike,
+  deviceId: string,
+  action: DeviceAction,
+): Promise<StaleRecovery | null> {
+  if (!("snapshotId" in action)) return null;
+  const fromSnapshotId = action.snapshotId;
+
+  const fresh = rememberSnapshot(
+    deviceId,
+    unwrap(await gateway.sendRequest(deviceId, { type: "get_screen" })) as RawSnapshot,
+  );
+  if (fresh.snapshotId === fromSnapshotId) return null;
+
+  // A scroll without a node targets the screen's default scrollable; there is
+  // no node identity to preserve, so the fresh id is enough.
+  const nodeId = "nodeId" in action ? action.nodeId : undefined;
+  if (nodeId === undefined) {
+    return {
+      action: { ...action, snapshotId: fresh.snapshotId },
+      fromSnapshotId,
+      toSnapshotId: fresh.snapshotId,
+    };
+  }
+
+  const previous = snapshotCache.get(`${deviceId}:${fromSnapshotId}`);
+  const target = previous?.nodes.find((node) => node.id === nodeId);
+  const identity = target ? nodeIdentity(target) : null;
+  if (!identity) return null;
+
+  const matches = fresh.nodes.filter((node) => nodeIdentity(node) === identity);
+  const match = matches.length === 1 ? matches[0] : undefined;
+  if (!match) return null;
+
+  return {
+    action: { ...action, snapshotId: fresh.snapshotId, nodeId: match.id },
+    fromSnapshotId,
+    toSnapshotId: fresh.snapshotId,
+    fromNodeId: nodeId,
+    toNodeId: match.id,
+  };
+}
+
+/**
+ * Runs one action, retrying once against a fresh snapshot if the device
+ * reports the caller's snapshot stale. The retry re-resolves the node by
+ * identity, so it either acts on the same element or does not act at all.
+ */
+async function executeWithStaleRecovery(
+  gateway: DeviceGatewayLike,
+  deviceId: string,
+  action: DeviceAction,
+): Promise<{ result: unknown; recovery?: Omit<StaleRecovery, "action"> }> {
+  const result = unwrap(await gateway.sendRequest(deviceId, { type: "execute_action", action }));
+  if (!isStaleSnapshot(result)) return { result };
+
+  const recovery = await reResolveStaleAction(gateway, deviceId, action);
+  if (!recovery) return { result };
+
+  const { action: retried, ...detail } = recovery;
+  const retryResult = unwrap(
+    await gateway.sendRequest(deviceId, { type: "execute_action", action: retried }),
+  );
+  return { result: retryResult, recovery: detail };
+}
+
 function unwrap(response: Record<string, unknown>): unknown {
   if (response.ok !== true) {
     const err = response.error;
@@ -280,7 +419,7 @@ export function createAndroidToolServer(
     async ({ deviceTarget }) => {
       const deviceId = requireOnlineDevice(gateway, deviceTarget);
       const result = await gateway.sendRequest(deviceId, { type: "get_screen" });
-      const snapshot = unwrap(result) as unknown as RawSnapshot;
+      const snapshot = rememberSnapshot(deviceId, unwrap(result) as unknown as RawSnapshot);
       return {
         content: [{ type: "text", text: JSON.stringify(compactSnapshot(snapshot)) }],
       };
@@ -305,7 +444,10 @@ export function createAndroidToolServer(
     },
     async ({ deviceTarget, query, role, action, limit }) => {
       const deviceId = requireOnlineDevice(gateway, deviceTarget);
-      const raw = unwrap(await gateway.sendRequest(deviceId, { type: "get_screen" })) as RawSnapshot;
+      const raw = rememberSnapshot(
+        deviceId,
+        unwrap(await gateway.sendRequest(deviceId, { type: "get_screen" })) as RawSnapshot,
+      );
       const q = query?.toLowerCase();
       const r = role?.toLowerCase();
       const matches = raw.nodes.filter((node) => {
@@ -340,17 +482,26 @@ export function createAndroidToolServer(
         "launch_app accepts an installed package name or exact visible app label; media_control uses Android media sessions. " +
         "Consequential actions are refused here, including dismissing or invoking someone " +
         "else's notification: use commit_action for those, from a sandbox script too. " +
+        "If the snapshot has been replaced since you observed it, the bridge re-observes and " +
+        "re-targets the same node automatically, reporting staleSnapshotRecovery; you only see " +
+        "stale_snapshot when that node is gone or ambiguous. " +
         "Returns status, screenChanged, and latency.",
       inputSchema: { deviceTarget: DeviceTargetSchema, action: DeviceActionSchema },
     },
     async ({ deviceTarget, action }) => {
       assertNotConsequential(action);
       const deviceId = requireOnlineDevice(gateway, deviceTarget);
-      const result = await gateway.sendRequest(deviceId, {
-        type: "execute_action",
-        action,
-      });
-      return { content: [{ type: "text", text: JSON.stringify(unwrap(result)) }] };
+      const { result, recovery } = await executeWithStaleRecovery(gateway, deviceId, action);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(
+            recovery && typeof result === "object" && result !== null
+              ? { ...(result as Record<string, unknown>), staleSnapshotRecovery: recovery }
+              : result,
+          ),
+        }],
+      };
     },
   );
 
@@ -390,7 +541,12 @@ export function createAndroidToolServer(
       title: "Execute and observe",
       description:
         "Executes one Android action and atomically returns a bounded post-action screen " +
-        "summary after the UI settles. Prefer this for navigation to reduce races and tool calls.",
+        "summary after the UI settles. Prefer this for navigation to reduce races and tool calls. " +
+        "A node action whose snapshot has since been replaced is not simply rejected: the bridge " +
+        "re-observes, re-resolves the node you named by its identity, and runs the action against " +
+        "the current snapshot, reporting what it re-targeted as staleSnapshotRecovery. You get " +
+        "stale_snapshot back only when that node is now missing or ambiguous, which means the " +
+        "screen really did move - re-observe and replan rather than retrying the same call.",
       inputSchema: {
         deviceTarget: DeviceTargetSchema,
         action: DeviceActionSchema,
@@ -400,16 +556,21 @@ export function createAndroidToolServer(
     async ({ deviceTarget, action, settleMs }) => {
       assertNotConsequential(action);
       const deviceId = requireOnlineDevice(gateway, deviceTarget);
-      const actionResult = unwrap(await gateway.sendRequest(deviceId, {
-        type: "execute_action",
-        action,
-      }));
+      const { result: actionResult, recovery } =
+        await executeWithStaleRecovery(gateway, deviceId, action);
       if (settleMs > 0) await new Promise((resolve) => setTimeout(resolve, settleMs));
-      const raw = unwrap(await gateway.sendRequest(deviceId, { type: "get_screen" })) as RawSnapshot;
+      const raw = rememberSnapshot(
+        deviceId,
+        unwrap(await gateway.sendRequest(deviceId, { type: "get_screen" })) as RawSnapshot,
+      );
       return {
         content: [{
           type: "text",
-          text: JSON.stringify({ action: actionResult, screen: compactSnapshot(raw) }),
+          text: JSON.stringify({
+            action: actionResult,
+            ...(recovery ? { staleSnapshotRecovery: recovery } : {}),
+            screen: compactSnapshot(raw),
+          }),
         }],
       };
     },
@@ -436,7 +597,10 @@ export function createAndroidToolServer(
       const deadline = Date.now() + timeoutMs;
       let last: RawSnapshot | null = null;
       while (Date.now() <= deadline) {
-        last = unwrap(await gateway.sendRequest(deviceId, { type: "get_screen" })) as RawSnapshot;
+        last = rememberSnapshot(
+          deviceId,
+          unwrap(await gateway.sendRequest(deviceId, { type: "get_screen" })) as RawSnapshot,
+        );
         const packageOk = !packageName || last.packageName === packageName;
         const match = wantedText
           ? last.nodes.find((node) => nodeSearchText(node).includes(wantedText.toLowerCase()))
