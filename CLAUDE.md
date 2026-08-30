@@ -112,6 +112,12 @@ Screenshots never travel through the transcript. `tool.response.content` is a st
 
 Sub-agent threads render as nested containers. `thread.created`/`thread.done` fold into one `subagent` transcript item placed on the *parent's* thread, and `groupByThread` in `apps/dashboard/src/transcript-tree.js` nests every item carrying that `threadId` inside it. An item on a thread with no container (a viewer that attached mid-run) stays on the main line rather than disappearing.
 
+## find_nodes only returns what is on screen
+
+`find_nodes` searches the whole tree, and virtualized content (Amazon's WebView product grid, long RecyclerViews) stays in that tree after scrolling away, reported with zero-area bounds pinned to the viewport edge — the Decorum bedsheet card came back as `[529,2557,1195,2557]` on a 2772px screen. Those nodes cannot be tapped, and nothing in the old response distinguished them from real targets, so a run adopted a product it could never reach and scrolled after it for 58 of 103 steps while three vision sub-agents correctly answered "absent".
+
+The tool now returns only rendered nodes, with `onScreen` / `offScreenOmitted` counts and, when everything matched is off-screen, an explicit note. `includeOffScreen: true` restores the old behaviour, tagging each node `onScreen`. Treat `onScreen: 0` as "scroll, or pick another candidate", never as a broken tree.
+
 ## Snapshots go stale on every observation
 
 The phone keeps exactly one live snapshot (`captured` in `OperatorAccessibilityService.kt`). `get_screen`, `find_nodes`, `wait_for` and `execute_and_observe` all take one, so the ordinary observe → search → act sequence hands the device an id it has already discarded and the action is dropped with `stale_snapshot`. Node ids are positional within a snapshot, so replaying the same id against the fresh tree can press a different node.

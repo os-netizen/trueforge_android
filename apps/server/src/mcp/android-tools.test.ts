@@ -382,3 +382,88 @@ test("a scroll with no node only needs the current snapshot id", async () => {
   const scrolls = sent.filter((s) => s.request.type === "execute_action");
   assert.equal((scrolls[1]?.request.action as { snapshotId: string }).snapshotId, "snap_2");
 });
+
+/**
+ * Amazon's virtualized product grid keeps scrolled-away cards in the tree with
+ * zero-area bounds pinned to the viewport edge. Returning those alongside real
+ * targets is what let a run adopt a product it could never tap and scroll after
+ * it for fifty-odd steps.
+ */
+const SCREEN = { id: "n0", className: "android.widget.FrameLayout", viewId: null, text: null, contentDescription: null, bounds: [0, 0, 1240, 2772] };
+const VISIBLE_CARD = { id: "n95", parentId: "n0", className: "android.widget.Image", viewId: null, text: null, contentDescription: "British Home Bedding bed sheet", bounds: [276, 892, 508, 1064] };
+const OFFSCREEN_CARD = { id: "n918", parentId: "n0", className: "android.view.View", viewId: null, text: null, contentDescription: "Decorum Red Heart Print Double Bedsheet | 228 x 220 cm Romantic Bed Sheet with 2 Pillow Covers", bounds: [529, 2557, 1195, 2557] };
+
+function screenGateway(nodes: Array<Record<string, unknown>>): DeviceGatewayLike {
+  clearSnapshotCache();
+  return {
+    listDevices: () => [{ deviceId: "tablet-1" }],
+    isOnline: () => true,
+    sendRequest: async () => ({
+      ok: true,
+      result: { deviceId: "tablet-1", snapshotId: "snap_1", packageName: "com.shop", timestamp: 0, nodes },
+    }),
+  };
+}
+
+test("find_nodes hides nodes that are in the tree but not on the screen", async () => {
+  const client = await connectedClient(screenGateway([SCREEN, VISIBLE_CARD, OFFSCREEN_CARD]));
+  const result = await client.callTool({
+    name: "find_nodes",
+    arguments: { deviceTarget: TABLET_TARGET, query: "bed sheet" },
+  });
+
+  const payload = JSON.parse(textOf(result)) as {
+    totalMatches: number; onScreen: number; offScreenOmitted: number;
+    nodes: Array<{ id: string }>;
+  };
+  assert.equal(payload.totalMatches, 2);
+  assert.equal(payload.onScreen, 1);
+  assert.equal(payload.offScreenOmitted, 1);
+  assert.deepEqual(payload.nodes.map((n) => n.id), ["n95"]);
+});
+
+test("an entirely off-screen result says so instead of returning untappable nodes", async () => {
+  const client = await connectedClient(screenGateway([SCREEN, OFFSCREEN_CARD]));
+  const result = await client.callTool({
+    name: "find_nodes",
+    arguments: { deviceTarget: TABLET_TARGET, query: "decorum" },
+  });
+
+  const payload = JSON.parse(textOf(result)) as {
+    totalMatches: number; onScreen: number; nodes: unknown[]; note?: string;
+  };
+  assert.equal(payload.totalMatches, 1);
+  assert.equal(payload.onScreen, 0);
+  assert.deepEqual(payload.nodes, []);
+  assert.match(payload.note ?? "", /not rendered on the current screen/);
+});
+
+test("includeOffScreen returns the hidden nodes tagged as unusable targets", async () => {
+  const client = await connectedClient(screenGateway([SCREEN, VISIBLE_CARD, OFFSCREEN_CARD]));
+  const result = await client.callTool({
+    name: "find_nodes",
+    arguments: { deviceTarget: TABLET_TARGET, query: "bed sheet", includeOffScreen: true },
+  });
+
+  const payload = JSON.parse(textOf(result)) as {
+    onScreen: number; offScreenIncluded: number;
+    nodes: Array<{ id: string; onScreen: boolean }>;
+  };
+  assert.equal(payload.onScreen, 1);
+  assert.equal(payload.offScreenIncluded, 1);
+  assert.deepEqual(
+    payload.nodes.map((n) => [n.id, n.onScreen]),
+    [["n95", true], ["n918", false]],
+  );
+});
+
+test("a node clipped by the screen edge is still a usable target", async () => {
+  const halfVisible = { ...VISIBLE_CARD, id: "n96", bounds: [276, 2700, 508, 2900] };
+  const client = await connectedClient(screenGateway([SCREEN, halfVisible]));
+  const result = await client.callTool({
+    name: "find_nodes",
+    arguments: { deviceTarget: TABLET_TARGET, query: "bed sheet" },
+  });
+
+  assert.equal((JSON.parse(textOf(result)) as { onScreen: number }).onScreen, 1);
+});

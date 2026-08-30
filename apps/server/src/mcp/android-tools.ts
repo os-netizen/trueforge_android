@@ -341,6 +341,49 @@ function unwrap(response: Record<string, unknown>): unknown {
   return response.result;
 }
 
+/**
+ * The screen rectangle a snapshot was taken against.
+ *
+ * The root node spans the display, so it is the honest source. A tree with no
+ * usable root falls back to the union of what it does contain, which keeps
+ * visibility filtering conservative rather than dropping everything.
+ */
+function displayBounds(raw: RawSnapshot): [number, number, number, number] {
+  const root = raw.nodes.find((node) => node.parentId == null);
+  if (root && root.bounds[2] > root.bounds[0] && root.bounds[3] > root.bounds[1]) {
+    return root.bounds;
+  }
+  return raw.nodes.reduce<[number, number, number, number]>(
+    (acc, node) => [
+      Math.min(acc[0], node.bounds[0]),
+      Math.min(acc[1], node.bounds[1]),
+      Math.max(acc[2], node.bounds[2]),
+      Math.max(acc[3], node.bounds[3]),
+    ],
+    [0, 0, 0, 0],
+  );
+}
+
+/**
+ * Whether a node is actually rendered where a tap could reach it.
+ *
+ * Virtualized WebView and RecyclerView content stays in the accessibility tree
+ * after it scrolls out of view, reported with zero-area bounds pinned to the
+ * viewport edge - Amazon's off-screen product cards came back as
+ * [529,2557,1195,2557] on a 2772px-tall screen. Nothing in the old response
+ * distinguished that from a tappable node, so an agent could search by text,
+ * find a product that was nowhere on screen, and spend a run trying to reach
+ * it. Zero area means not rendered; partial visibility still counts.
+ */
+export function isOnScreen(
+  node: RawSnapNode,
+  display: [number, number, number, number],
+): boolean {
+  const [left, top, right, bottom] = node.bounds;
+  if (right <= left || bottom <= top) return false;
+  return right > display[0] && left < display[2] && bottom > display[1] && top < display[3];
+}
+
 function nodeSearchText(node: RawSnapNode): string {
   return [node.text, node.contentDescription, node.className, node.viewId]
     .filter(Boolean)
@@ -433,16 +476,24 @@ export function createAndroidToolServer(
       description:
         "Searches the complete current accessibility tree on the bridge and returns only " +
         "matching nodes. Prefer this over requesting or scrolling through a large tree. " +
-        "Results are bounded and include the snapshotId required for node actions.",
+        "Results are bounded and include the snapshotId required for node actions. " +
+        "By default only nodes actually rendered on the current screen are returned: apps with " +
+        "virtualized lists (WebView product grids, long RecyclerViews) keep scrolled-away items " +
+        "in the tree with zero-area bounds, and those cannot be tapped. `onScreen` counts what " +
+        "you can act on now and `offScreenOmitted` what exists but is not rendered - a result " +
+        "with onScreen 0 means scroll or search for something else, never that the tree is " +
+        "broken. Pass includeOffScreen only to confirm an item exists somewhere in the page; " +
+        "the nodes it adds are tagged onScreen:false and must not be used as action targets.",
       inputSchema: {
         deviceTarget: DeviceTargetSchema,
         query: z.string().max(200).optional(),
         role: z.string().max(80).optional(),
         action: z.string().max(80).optional(),
         limit: z.number().int().min(1).max(20).default(10),
+        includeOffScreen: z.boolean().default(false),
       },
     },
-    async ({ deviceTarget, query, role, action, limit }) => {
+    async ({ deviceTarget, query, role, action, limit, includeOffScreen }) => {
       const deviceId = requireOnlineDevice(gateway, deviceTarget);
       const raw = rememberSnapshot(
         deviceId,
@@ -456,6 +507,11 @@ export function createAndroidToolServer(
         if (action && !node.actions?.includes(action)) return false;
         return true;
       });
+
+      const display = displayBounds(raw);
+      const visible = matches.filter((node) => isOnScreen(node, display));
+      const offScreenCount = matches.length - visible.length;
+      const selected = includeOffScreen ? matches : visible;
       return {
         content: [{
           type: "text",
@@ -463,8 +519,24 @@ export function createAndroidToolServer(
             snapshotId: raw.snapshotId,
             packageName: raw.packageName,
             totalMatches: matches.length,
-            returned: Math.min(matches.length, limit),
-            nodes: matches.slice(0, limit).map(compactMatch),
+            onScreen: visible.length,
+            ...(includeOffScreen
+              ? { offScreenIncluded: offScreenCount }
+              : { offScreenOmitted: offScreenCount }),
+            returned: Math.min(selected.length, limit),
+            nodes: selected.slice(0, limit).map((node) => (
+              includeOffScreen
+                ? { ...compactMatch(node), onScreen: isOnScreen(node, display) }
+                : compactMatch(node)
+            )),
+            ...(selected.length === 0 && offScreenCount > 0
+              ? {
+                note:
+                  `${offScreenCount} match(es) exist in the page but are not rendered on the ` +
+                  "current screen, so they cannot be tapped. Scroll to bring them into view, or " +
+                  "act on a different candidate that is already visible.",
+              }
+              : {}),
           }),
         }],
       };
