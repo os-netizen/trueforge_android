@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
@@ -64,6 +65,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The UI draws its own background and pads for the system bars, so the
+        // task surface can run to the edges of the screen.
+        enableEdgeToEdge()
         serverUrl = DeviceConnectionService.serverUrl(this)
 
         val permissionLauncher = registerForActivityResult(
@@ -105,6 +109,7 @@ class MainActivity : ComponentActivity() {
                 onClickNode = { nodeId -> actionResultJson { clickNode(nodeId) } },
                 onSetText = { nodeId, text -> actionResultJson { setText(nodeId, text) } },
                 onGlobalAction = { kind -> actionResultJson { globalAction(kind) } },
+                deviceId = DeviceConnectionService.deviceId(this),
                 pendingApproval = pendingApproval,
                 onApprovalDecision = { requestId, decision ->
                     ApprovalCoordinator.resolve(this, requestId, decision, reason = null)
@@ -118,11 +123,18 @@ class MainActivity : ComponentActivity() {
                 onSendTask = ::sendTask,
                 onStopTask = ::stopTask,
                 onMicTap = { onMicTap(micPermissionLauncher) },
+                onClearResult = ::clearRunSurface,
             )
         }
 
         observePendingApprovals()
         observePendingQuestions()
+    }
+
+    /** Clears the finished run so Home returns to its resting state. */
+    private fun clearRunSurface() {
+        if (task.runActive) return
+        task = task.copy(statusLine = "", log = emptyList(), output = null, error = null)
     }
 
     // --- Task entry -------------------------------------------------------
