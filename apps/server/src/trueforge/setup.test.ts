@@ -9,7 +9,7 @@ test("visual navigation recovery is isolated in a short-lived sub-agent", () => 
   );
   assert.match(
     ANDROID_OPERATOR_INSTRUCTIONS,
-    /For an eligible navigation problem, create one short-lived sub-agent named "vision-recovery"/,
+    /For an eligible problem, create one short-lived sub-agent named "vision-recovery"/,
   );
   assert.doesNotMatch(
     ANDROID_OPERATOR_INSTRUCTIONS,
@@ -17,18 +17,53 @@ test("visual navigation recovery is isolated in a short-lived sub-agent", () => 
   );
 });
 
-test("vision is target localization, never content extraction", () => {
+test("vision is localization or property checking, never content extraction", () => {
   assert.match(
     ANDROID_OPERATOR_INSTRUCTIONS,
-    /Do not use vision to read, transcribe, summarize, describe, compare, or interpret screen content/,
+    /do not use it to read, transcribe, summarize, or narrate screen content/,
   );
   assert.match(
     ANDROID_OPERATOR_INSTRUCTIONS,
-    /report that limitation rather than using vision as OCR/,
+    /report that limitation rather than screenshotting it/,
   );
   assert.match(
     ANDROID_OPERATOR_INSTRUCTIONS,
-    /strictly read-only UI-target locator, not a content reader/,
+    /strictly read-only visual observer[\s\S]*never a general content reader/,
+  );
+});
+
+test("visual verification is an eligible, delegated use of vision", () => {
+  assert.match(
+    ANDROID_OPERATOR_INSTRUCTIONS,
+    /Vision has exactly two eligible uses, and both are delegated to a sub-agent/,
+  );
+  assert.match(
+    ANDROID_OPERATOR_INSTRUCTIONS,
+    /visual verification - the task states a visual property that decides/,
+  );
+  assert.match(
+    ANDROID_OPERATOR_INSTRUCTIONS,
+    /verify it visually before acting on it or reporting it as done/,
+  );
+  // Verification goes through the tool that re-checks the screen around the
+  // inference, not a bare frame a verdict could outlive.
+  assert.match(
+    ANDROID_OPERATOR_INSTRUCTIONS,
+    /It uses inspect_screen_visually for both kinds of question[\s\S]*mode "verify" for a visual property/,
+  );
+  assert.match(
+    ANDROID_OPERATOR_INSTRUCTIONS,
+    /capture_screenshot is a last resort[\s\S]*may describe a screen that is already gone/,
+  );
+  // The verdict has to come back with evidence, and "unclear" must not be
+  // laundered into a pass.
+  assert.match(
+    ANDROID_OPERATOR_INSTRUCTIONS,
+    /the holds=yes\/no\/unclear verdict plus one short sentence of the visible evidence/,
+  );
+  assert.match(
+    ANDROID_OPERATOR_INSTRUCTIONS,
+    /An "unclear" or "unavailable" verdict is a real answer - do not treat it as confirmation/,
   );
 });
 
@@ -111,7 +146,7 @@ test("recovery has one semantic attempt budget", () => {
 test("vision refuses unstable frames and duplicate localization", () => {
   assert.match(
     ANDROID_OPERATOR_INSTRUCTIONS,
-    /no more than one vision child for the same target on the same observed screen/,
+    /no more than one vision child per target, and one per verification question, on the same observed screen/,
   );
   assert.match(
     ANDROID_OPERATOR_INSTRUCTIONS,
@@ -119,7 +154,7 @@ test("vision refuses unstable frames and duplicate localization", () => {
   );
   assert.match(
     ANDROID_OPERATOR_INSTRUCTIONS,
-    /never infer coordinates from expectation or an earlier frame/,
+    /never infer coordinates or a verdict from expectation, from listing text, or from an earlier frame/,
   );
 });
 

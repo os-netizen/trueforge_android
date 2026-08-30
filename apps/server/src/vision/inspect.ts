@@ -40,6 +40,17 @@ export interface InspectRequest {
   question: string;
   /** What the operator expected to be there, if it has a hypothesis. */
   expectation?: string;
+  /**
+   * "locate" (the default) answers *where* an actionable target is; "verify"
+   * answers *whether* a visual property holds on the current screen.
+   *
+   * Verification shares this path rather than getting its own screenshot tool
+   * precisely because of everything below: the screen-signature checks before
+   * and after inference, the frame-reference-only response, and the single
+   * bounded JSON answer. A verdict read off a raw screenshot has none of that,
+   * and a stale yes is indistinguishable from a true one.
+   */
+  mode?: "locate" | "verify";
 }
 
 export type VisionResolution =
@@ -64,6 +75,13 @@ export type VisionResolution =
       resolution: "absent";
       observation: string;
       suggestion: string;
+      screen: ScreenRef;
+    }
+  | {
+      resolution: "property";
+      holds: "yes" | "no" | "unclear";
+      confidence: Confidence;
+      observation: string;
       screen: ScreenRef;
     }
   | { resolution: "unavailable"; observation: string };
@@ -232,6 +250,8 @@ function buildPrompt(
     .map((n) => `${n.id}\t[${toImageSpace(n.bounds, scale).join(",")}]\t${label(n)}`)
     .join("\n");
 
+  if (req.mode === "verify") return buildVerifyPrompt(req, snapshot, table, shot);
+
   return [
     "You are the vision recovery step of an Android operator agent. The operator could not resolve a target from the accessibility tree alone and needs you to look at the screen.",
     "",
@@ -254,6 +274,43 @@ function buildPrompt(
   ].join("\n");
 }
 
+/**
+ * The verification prompt.
+ *
+ * Deliberately narrow: one closed question about appearance, three allowed
+ * verdicts, and no way to answer with an action. The nodes are still supplied
+ * because they say *which* thing on screen the question is about (the row, the
+ * thumbnail, the swatch), but the model is told not to decide from their text
+ * - a listing that says "red" is exactly the claim the operator is trying to
+ * check, so believing the label would make the whole call worthless.
+ */
+function buildVerifyPrompt(
+  req: InspectRequest,
+  snapshot: Snapshot,
+  table: string,
+  shot: Screenshot,
+): string {
+  return [
+    "You are the visual verification step of an Android operator agent. The operator needs to know whether a visual property really holds on the screen it is looking at, because the accessibility tree cannot express appearance.",
+    "",
+    `QUESTION: ${req.question}`,
+    ...(req.expectation ? [`OPERATOR EXPECTED: ${req.expectation}`] : []),
+    "",
+    `The attached image is the current screen, ${shot.width}x${shot.height} pixels.`,
+    `Foreground package: ${snapshot.packageName}${snapshot.windowTitle ? ` (${snapshot.windowTitle})` : ""}.`,
+    "",
+    "Accessibility nodes currently on this screen, as `nodeId<TAB>[left,top,right,bottom]<TAB>label`, with bounds already in the image's pixel space. They are context for locating what the question is about - never evidence for the answer itself:",
+    table || "(none)",
+    "",
+    "Answer with ONE strict JSON object, no prose and no markdown fence:",
+    '{"resolution":"property","holds":"yes|no|unclear","confidence":"high|medium|low","observation":"<at most 200 characters on what you actually see that decides it>"}.',
+    'If the thing the question is about is not visible on this screen at all, answer {"resolution":"absent","observation":"<what is on screen instead>","suggestion":"<the single most likely next step>"} instead.',
+    "",
+    "Judge only what is visible in the image. Do not decide from the node labels, from the wording of the question, or from what would be expected. If the image does not settle it - too small, cropped, obscured, or ambiguous under a colour filter - answer \"unclear\". \"unclear\" is a genuinely useful answer; a guess is not.",
+    "Keep every string short: the operator pays for this in context, and a long answer risks being cut off mid-JSON.",
+  ].join("\n");
+}
+
 /** Tolerates a fenced or prose-wrapped object; the model is asked for bare JSON. */
 export function parseVisionJson(raw: string): Record<string, unknown> {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(raw);
@@ -268,6 +325,17 @@ export function parseVisionJson(raw: string): Record<string, unknown> {
     throw new Error("Vision model returned JSON that is not an object");
   }
   return parsed as Record<string, unknown>;
+}
+
+/**
+ * Anything that is not a clear yes or no becomes "unclear".
+ *
+ * The fail-closed direction for a verdict is uncertainty, never confirmation:
+ * a malformed or missing field must not read as a pass, because the operator
+ * acts on "yes" and stops on "unclear".
+ */
+function asVerdict(value: unknown): "yes" | "no" | "unclear" {
+  return value === "yes" || value === "no" ? value : "unclear";
 }
 
 function asConfidence(value: unknown): Confidence {
@@ -415,6 +483,21 @@ export async function inspectScreenVisually(
   }
 
   const observation = asText(answer.observation, "The vision model returned no observation.");
+
+  // Verification answers before the locator branches: a property question has
+  // no node or coordinate to return, and a model that replies with one anyway
+  // has answered a question nobody asked. Both staleness checks above have
+  // already passed, so this verdict is bound to the screen that is still up.
+  if (req.mode === "verify" && answer.resolution !== "absent") {
+    return {
+      resolution: "property",
+      frame,
+      holds: asVerdict(answer.holds),
+      confidence: asConfidence(answer.confidence),
+      observation,
+      screen,
+    };
+  }
 
   if (answer.resolution === "node") {
     const nodeId = typeof answer.nodeId === "string" ? answer.nodeId : "";

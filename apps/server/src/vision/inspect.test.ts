@@ -325,3 +325,109 @@ test("reports the retarget in the observation so the operator can see it happene
   assert.partialDeepStrictEqual(result, { resolution: "node", nodeId: "n14" });
   assert.match((result as { observation: string }).observation, /Resolved .* to its clickable container n14/);
 });
+
+test("verify mode returns a verdict instead of a target", async () => {
+  const { gateway } = gatewayWith(SHOT);
+  const vision = caller(
+    '{"resolution":"property","holds":"no","confidence":"high","observation":"The bedsheet in the photo is burgundy, not red."}',
+  );
+
+  const result = await inspectScreenVisually(
+    gateway,
+    { question: "Is the pictured bedsheet red?", mode: "verify" },
+    { vision: vision.fn },
+  );
+
+  assert.equal(result.resolution, "property");
+  assert.equal(result.resolution === "property" && result.holds, "no");
+  const prompt = vision.seen[0]?.prompt ?? "";
+  assert.match(prompt, /visual verification step/);
+  // The labels are context for finding the subject, never grounds for the
+  // verdict - a listing that claims "red" is the thing being checked.
+  assert.match(prompt, /never evidence for the answer itself/);
+});
+
+test("a verdict that is not a clear yes or no degrades to unclear", async () => {
+  // Including the field being absent entirely: a missing verdict must not read
+  // as a pass, because the operator acts on "yes" and stops on "unclear".
+  const bodies = [
+    '{"resolution":"property","holds":"maybe","observation":"x"}',
+    '{"resolution":"property","holds":true,"observation":"x"}',
+    '{"resolution":"property","holds":null,"observation":"x"}',
+    '{"resolution":"property","observation":"x"}',
+  ];
+  for (const body of bodies) {
+    const { gateway } = gatewayWith(SHOT);
+    const vision = caller(body);
+    const result = await inspectScreenVisually(
+      gateway,
+      { question: "q", mode: "verify" },
+      { vision: vision.fn },
+    );
+    assert.equal(result.resolution === "property" && result.holds, "unclear");
+  }
+});
+
+test("a verify answer cannot escape a screen that moved during inference", async () => {
+  let screens = 0;
+  const gateway: VisionGatewayLike = {
+    listDevices: () => [{ deviceId: "tablet-1" }],
+    isOnline: () => true,
+    sendRequest: async (_deviceId, request) => {
+      if (request.type === "get_screen") {
+        screens += 1;
+        return {
+          ok: true,
+          result: {
+            snapshotId: `snap-${screens}`,
+            packageName: "com.example.shop",
+            windowTitle: "Results",
+            // The list scrolls under the child while it is looking, so the
+            // frame it judged shows a different product than the one now on
+            // screen. A "yes" here would select the wrong item.
+            nodes: screens < 3 ? NODES : NODES.slice(1),
+          },
+        };
+      }
+      return { ok: true, result: SHOT };
+    },
+  };
+  const vision = caller('{"resolution":"property","holds":"yes","observation":"Red."}');
+
+  const result = await inspectScreenVisually(
+    gateway,
+    { question: "Is it red?", mode: "verify" },
+    { vision: vision.fn },
+  );
+
+  assert.equal(result.resolution, "unavailable");
+  assert.match(result.observation, /changed while vision was analyzing/);
+});
+
+test("verify mode still reports an absent subject rather than guessing", async () => {
+  const { gateway } = gatewayWith(SHOT);
+  const vision = caller(
+    '{"resolution":"absent","observation":"No product image on screen.","suggestion":"Scroll down to the listing."}',
+  );
+
+  const result = await inspectScreenVisually(
+    gateway,
+    { question: "Is the bedsheet red?", mode: "verify" },
+    { vision: vision.fn },
+  );
+
+  assert.equal(result.resolution, "absent");
+  assert.equal(result.resolution === "absent" && result.suggestion, "Scroll down to the listing.");
+});
+
+test("locate mode is unchanged and never asks for a verdict", async () => {
+  const { gateway } = gatewayWith(SHOT);
+  const vision = caller('{"resolution":"node","nodeId":"n2","observation":"Mute"}');
+
+  const result = await inspectScreenVisually(gateway, { question: "q" }, { vision: vision.fn });
+
+  assert.equal(result.resolution, "node");
+  const prompt = vision.seen[0]?.prompt ?? "";
+  assert.match(prompt, /vision recovery step/);
+  assert.doesNotMatch(prompt, /holds/);
+});

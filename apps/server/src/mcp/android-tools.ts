@@ -524,11 +524,13 @@ export function createAndroidToolServer(
         "Returns the current screen as an image. This puts a full frame into the calling " +
         "context and is deliberately expensive: do NOT call it on the main thread, and it is " +
         "useless from a sandbox script (a script cannot look at pixels). It exists for a " +
-        "vision-recovery sub-agent locating an actionable UI target in its isolated context. " +
-        "It is not an OCR, transcription, content-reading, or image-description tool. Main " +
-        "agents must delegate eligible visual navigation and must never call this directly. " +
-        "A vision-recovery sub-agent should prefer inspect_screen_visually when its compact " +
-        "grounded JSON can answer the question. Privacy-sensitive: the " +
+        "vision-recovery sub-agent in its isolated context, as a last resort. It is not an " +
+        "OCR, transcription, or content-narration tool. Main agents must delegate eligible " +
+        "visual work and must never call this directly. A vision-recovery sub-agent should " +
+        "use inspect_screen_visually instead for both locating a target and verifying a " +
+        "visual property: it returns compact grounded JSON and re-checks that the screen has " +
+        "not moved around the inference, which a bare frame cannot do - a verdict judged here " +
+        "may describe a screen that is already gone. Privacy-sensitive: the " +
         "image is never written to disk (it is held briefly in memory so the operator's " +
         "dashboard can show what you looked at), and secure windows are blocked by Android.",
       inputSchema: {
@@ -598,24 +600,40 @@ export function createAndroidToolServer(
     {
       title: "Inspect the screen visually",
       description:
-        "Sub-agent-only UI-target locator for navigation recovery when an actionable control " +
-        "is drawn or unlabelled and the accessibility tree cannot locate it. Do not use it " +
-        "to read, transcribe, summarize, describe, compare, or interpret screen content. " +
-        "Captures the screen, shows it to a vision model " +
-        "together with the current nodes and their bounds, and answers your question. " +
-        "Returns {resolution, observation, ...}: 'node' with a snapshotId+nodeId you act on " +
-        "normally with click_node/set_text, 'coordinates' (screen pixels, for drawn controls " +
-        "with no node) for tap_coordinates, 'absent' with a suggestion when the target is not " +
-        "on this screen, or 'unavailable' for a secure window. The main agent must not call " +
-        "this tool directly or from Code Mode; it must delegate the visual question to a " +
-        "short-lived, read-only vision-recovery sub-agent. Read-only.",
+        "Sub-agent-only visual question about the current screen, in one of two modes. " +
+        "mode='locate' (default) finds an actionable control that is drawn or unlabelled and " +
+        "that the accessibility tree cannot locate. mode='verify' answers whether a visual " +
+        "property holds - a colour, pattern, shape, or which pictured item matches a " +
+        "description - when no node field settles it. Do not use either mode to read, " +
+        "transcribe, summarize, or narrate screen content. Captures the screen, shows it to a " +
+        "vision model together with the current nodes and their bounds, and answers your " +
+        "question. Returns {resolution, observation, ...}: 'node' with a snapshotId+nodeId you " +
+        "act on normally with click_node/set_text, 'coordinates' (screen pixels, for drawn " +
+        "controls with no node) for tap_coordinates, 'property' with holds=yes|no|unclear for " +
+        "a verification, 'absent' with a suggestion when the subject is not on this screen, or " +
+        "'unavailable' for a secure window or a screen that moved while it was being looked " +
+        "at. Prefer this over capture_screenshot in both modes: it re-checks that the screen " +
+        "has not changed before and after inference, so an answer can never escape a stale " +
+        "frame, and no pixels enter your context. The main agent must not call this tool " +
+        "directly or from Code Mode; it must delegate the visual question to a short-lived, " +
+        "read-only vision-recovery sub-agent. Read-only.",
       inputSchema: {
         deviceTarget: DeviceTargetSchema,
         question: z
           .string()
           .min(1)
           .max(400)
-          .describe("Which actionable UI target must be located on the current screen?"),
+          .describe(
+            "One question: which actionable UI target must be located, or (mode='verify') " +
+              "which visual property must be confirmed, on the current screen?",
+          ),
+        mode: z
+          .enum(["locate", "verify"])
+          .default("locate")
+          .describe(
+            "'locate' finds a UI target; 'verify' returns holds=yes|no|unclear for a visual " +
+              "property. 'unclear' is a real answer, not a failure - never treat it as a yes.",
+          ),
         expectation: z
           .string()
           .max(400)
@@ -623,11 +641,11 @@ export function createAndroidToolServer(
           .describe("What you expected to be on screen, if you have a hypothesis."),
       },
     },
-    async ({ deviceTarget, question, expectation }) => {
+    async ({ deviceTarget, question, expectation, mode }) => {
       const deviceId = requireOnlineDevice(gateway, deviceTarget);
       const result = await inspectScreenVisually(
         gateway,
-        { deviceId, question, expectation },
+        { deviceId, question, expectation, mode },
         {
           vision: options.vision,
           // The frame is stored but never returned to the caller as pixels:
