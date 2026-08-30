@@ -49,6 +49,14 @@
             </intent-filter>
         </receiver>
 
+        <receiver
+            android:name=".questions.QuestionAnswerReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="dev.trueforge.operator.QUESTION_ANSWER" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".accessibility.OperatorAccessibilityService"
             android:exported="false"
