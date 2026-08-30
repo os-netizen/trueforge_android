@@ -524,11 +524,14 @@ export function createAndroidToolServer(
         "Returns the current screen as an image. This puts a full frame into the calling " +
         "context and is deliberately expensive: do NOT call it on the main thread, and it is " +
         "useless from a sandbox script (a script cannot look at pixels). It exists for a " +
-        "vision-recovery sub-agent locating an actionable UI target in its isolated context. " +
-        "It is not an OCR, transcription, content-reading, or image-description tool. Main " +
-        "agents must delegate eligible visual navigation and must never call this directly. " +
-        "A vision-recovery sub-agent should prefer inspect_screen_visually when its compact " +
-        "grounded JSON can answer the question. Privacy-sensitive: the " +
+        "vision-recovery sub-agent working in its isolated context, either locating an " +
+        "actionable UI target or judging one closed visual property of what is on screen " +
+        "(a colour, pattern, shape, or which pictured item matches a description). It is not " +
+        "an OCR, transcription, or content-narration tool. Main agents must delegate eligible " +
+        "visual work and must never call this directly. A vision-recovery sub-agent should " +
+        "prefer inspect_screen_visually when its compact grounded JSON can answer the " +
+        "question, and use this tool when the question is about appearance rather than " +
+        "location. Privacy-sensitive: the " +
         "image is never written to disk (it is held briefly in memory so the operator's " +
         "dashboard can show what you looked at), and secure windows are blocked by Android.",
       inputSchema: {
@@ -599,8 +602,9 @@ export function createAndroidToolServer(
       title: "Inspect the screen visually",
       description:
         "Sub-agent-only UI-target locator for navigation recovery when an actionable control " +
-        "is drawn or unlabelled and the accessibility tree cannot locate it. Do not use it " +
-        "to read, transcribe, summarize, describe, compare, or interpret screen content. " +
+        "is drawn or unlabelled and the accessibility tree cannot locate it. It answers where " +
+        "something is, not what it looks like: for a visual-property check use capture_screenshot " +
+        "instead. Do not use it to read, transcribe, summarize, or narrate screen content. " +
         "Captures the screen, shows it to a vision model " +
         "together with the current nodes and their bounds, and answers your question. " +
         "Returns {resolution, observation, ...}: 'node' with a snapshotId+nodeId you act on " +
