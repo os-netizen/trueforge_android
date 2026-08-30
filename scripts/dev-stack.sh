@@ -3,14 +3,28 @@
 set -Eeuo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-NODE_BIN=${TRUEFORGE_NODE_BIN:-/home/omkar/.nvm/versions/node/v22.23.2/bin}
+PINNED_NODE_BIN=/home/omkar/.nvm/versions/node/v22.23.2/bin
 
-if [[ ! -x "$NODE_BIN/node" || ! -x "$NODE_BIN/npm" ]]; then
-  echo "Node 22+ was not found in $NODE_BIN (set TRUEFORGE_NODE_BIN to override)." >&2
+if [[ -n "${TRUEFORGE_NODE_BIN:-}" ]]; then
+  if [[ ! -x "$TRUEFORGE_NODE_BIN/node" || ! -x "$TRUEFORGE_NODE_BIN/npm" ]]; then
+    echo "Node and npm were not found in TRUEFORGE_NODE_BIN=$TRUEFORGE_NODE_BIN." >&2
+    exit 1
+  fi
+  export PATH="$TRUEFORGE_NODE_BIN:$PATH"
+elif [[ -x "$PINNED_NODE_BIN/node" && -x "$PINNED_NODE_BIN/npm" ]]; then
+  export PATH="$PINNED_NODE_BIN:$PATH"
+fi
+
+if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+  echo "Node 22+ and npm are required (set TRUEFORGE_NODE_BIN to their bin directory)." >&2
   exit 1
 fi
 
-export PATH="$NODE_BIN:$PATH"
+NODE_MAJOR=$(node -p 'Number(process.versions.node.split(".")[0])')
+if ((NODE_MAJOR < 22)); then
+  echo "Node 22+ is required; found $(node --version)." >&2
+  exit 1
+fi
 
 declare -a CHILD_PIDS=()
 declare -a CHILD_NAMES=()
@@ -54,7 +68,7 @@ cd "$ROOT_DIR"
 
 start_component "TrueForge runtime :8790" "$ROOT_DIR/scripts/trueforge-start.sh"
 start_component "Android bridge/API :8791/:8792" npm run dev:server
-start_component "Dashboard :5173" npm run -w dashboard dev -- --host 0.0.0.0
+start_component "Dashboard :5173" npm run -w dashboard dev -- --host 0.0.0.0 --port 5173 --strictPort
 
 echo "TrueForge Android stack is starting. Press Ctrl-C to stop all components."
 echo "Dashboard: http://127.0.0.1:5173"
