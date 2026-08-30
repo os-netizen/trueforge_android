@@ -112,13 +112,16 @@ install/fixtures.
 
 ```sh
 npm install
-scripts/trueforge-start.sh          # TrueForge runtime on :8790 (pins Node 22, sets sandbox TMPDIR)
-npm run dev:server                  # bridge MCP :8791 + device gateway/API :8792
-npm run -w dashboard dev            # dashboard on :5173 (proxies /api → :8792)
+npm run dev:stack                   # runtime :8790, bridge/API :8791/:8792, dashboard :5173
 # build + install the operator app
 cd android && ./gradlew :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk   # package: dev.trueforge.operator.debug
 ```
+
+The all-in-one launcher pins Node 22, preserves the runtime sandbox `TMPDIR`
+setup, and stops every component together on Ctrl-C. The individual commands
+remain available as `scripts/trueforge-start.sh`, `npm run dev:server`, and
+`npm run -w dashboard dev` when only one component is needed.
 
 Preflight: `curl http://127.0.0.1:8792/dashboard/status`. Note the TrueForge
 runtime intentionally has no `/health`; check its root response.

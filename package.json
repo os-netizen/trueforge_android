@@ -16,6 +16,7 @@
     "eval:phone": "npm run eval:phone --workspace @trueforge-android/server --",
     "test:eval": "npm run test:eval --workspace @trueforge-android/server",
     "test:dashboard": "npm run test --workspace dashboard",
+    "dev:stack": "scripts/dev-stack.sh",
     "dev:server": "npm run dev --workspace @trueforge-android/server",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
