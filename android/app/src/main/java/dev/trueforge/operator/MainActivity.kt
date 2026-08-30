@@ -134,9 +134,9 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Back to a blank screen: the finished run *and* the prompt that produced
-     * it. Distinct from [clearRunSurface], which only dismisses the result and
-     * leaves the prompt so a task can be tweaked and sent again.
+     * Back to a blank screen, and — by dropping the run id — back to a new
+     * session. Distinct from [clearRunSurface], which only dismisses the
+     * finished run's result and leaves the session available to continue.
      */
     private fun startNewTask() {
         if (task.runActive) return
@@ -147,7 +147,7 @@ class MainActivity : ComponentActivity() {
         task = task.copy(prompt = "", runId = null, micError = null, micListening = false)
     }
 
-    /** Dismisses the finished run's result, keeping the prompt for a re-run. */
+    /** Dismisses the finished run's result; the session stays continuable. */
     private fun clearRunSurface() {
         if (task.runActive) return
         task = task.copy(
@@ -180,6 +180,9 @@ class MainActivity : ComponentActivity() {
         task = task.copy(
             runActive = true,
             statusLine = "Starting…",
+            // The prompt has moved onto the timeline, so the box empties and
+            // is ready for the next turn rather than holding a sent message.
+            prompt = "",
             steps = if (continuing == null) listOf(promptStep) else task.steps + promptStep,
             output = null,
             error = null,
