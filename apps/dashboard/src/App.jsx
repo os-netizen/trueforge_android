@@ -185,6 +185,7 @@ export function App() {
   const [loadingRun, setLoadingRun] = useState(false);
   const [mobilePanel, setMobilePanel] = useState("workspace");
   const transcriptAbort = useRef(null);
+  const inspectorRequest = useRef(0);
 
   const devices = status?.devices || [];
   const device = devices.find((entry) => entry.deviceId === selectedDeviceId) || devices[0] || null;
@@ -194,6 +195,9 @@ export function App() {
   }, [device?.deviceId, selectedDeviceId]);
 
   const refresh = useCallback(async () => {
+    const requestId = ++inspectorRequest.current;
+    setDeviceState(null);
+    setScreenshot(null);
     try {
       const [nextStatus, runData] = await Promise.all([
         getJson("/dashboard/status"),
@@ -208,13 +212,17 @@ export function App() {
         const devicePath = `${API}/devices/${encodeURIComponent(nextDevice.deviceId)}`;
         void fetch(`${devicePath}/state`, { signal: AbortSignal.timeout(5000) })
           .then((response) => (response.ok ? response.json() : null))
-          .then((body) => body && setDeviceState(body))
+          .then((body) => {
+            if (body && inspectorRequest.current === requestId) setDeviceState(body);
+          })
           .catch(() => {});
         void fetch(`${devicePath}/screenshot`, { signal: AbortSignal.timeout(7000) })
           .then((response) => (response.ok ? response.json() : null))
           .then((body) => {
             const result = body?.result || body;
-            if (result?.dataBase64) setScreenshot(`data:image/png;base64,${result.dataBase64}`);
+            if (result?.dataBase64 && inspectorRequest.current === requestId) {
+              setScreenshot(`data:image/png;base64,${result.dataBase64}`);
+            }
           })
           .catch(() => {});
       }
@@ -363,6 +371,9 @@ export function App() {
   }, []);
 
   const changeDevice = useCallback((deviceId) => {
+    inspectorRequest.current += 1;
+    setDeviceState(null);
+    setScreenshot(null);
     newRun();
     setSelectedDeviceId(deviceId);
   }, [newRun]);

@@ -227,10 +227,16 @@ async function handleApi(
     if (!prompt) return send(400, { error: "prompt is required" });
     if (!deviceId) return send(400, { error: "deviceId is required" });
     if (prompt.length > 4000) return send(400, { error: "prompt is too long" });
-    if (!gateway.isOnline(deviceId)) return send(409, { error: `Device '${deviceId}' is offline` });
-    if (runId && !findDashboardRun(runId)) {
+    const existingRun = runId ? findDashboardRun(runId) : undefined;
+    if (runId && !existingRun) {
       return send(404, { error: "unknown run to continue" });
     }
+    if (existingRun?.deviceId && existingRun.deviceId !== deviceId) {
+      return send(409, {
+        error: `Run '${existingRun.id}' is bound to device '${existingRun.deviceId}', not '${deviceId}'`,
+      });
+    }
+    if (!gateway.isOnline(deviceId)) return send(409, { error: `Device '${deviceId}' is offline` });
     if (runId && isRunLive(runId)) {
       return send(409, { error: "run is still in progress" });
     }
