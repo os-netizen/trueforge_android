@@ -45,15 +45,25 @@ test("visual verification is an eligible, delegated use of vision", () => {
     ANDROID_OPERATOR_INSTRUCTIONS,
     /verify it visually before acting on it or reporting it as done/,
   );
+  // Verification goes through the tool that re-checks the screen around the
+  // inference, not a bare frame a verdict could outlive.
+  assert.match(
+    ANDROID_OPERATOR_INSTRUCTIONS,
+    /It uses inspect_screen_visually for both kinds of question[\s\S]*mode "verify" for a visual property/,
+  );
+  assert.match(
+    ANDROID_OPERATOR_INSTRUCTIONS,
+    /capture_screenshot is a last resort[\s\S]*may describe a screen that is already gone/,
+  );
   // The verdict has to come back with evidence, and "unclear" must not be
   // laundered into a pass.
   assert.match(
     ANDROID_OPERATOR_INSTRUCTIONS,
-    /a yes\/no\/unclear verdict plus one short sentence of the visible evidence/,
+    /the holds=yes\/no\/unclear verdict plus one short sentence of the visible evidence/,
   );
   assert.match(
     ANDROID_OPERATOR_INSTRUCTIONS,
-    /An "unclear" verdict is a real answer - do not treat it as confirmation/,
+    /An "unclear" or "unavailable" verdict is a real answer - do not treat it as confirmation/,
   );
 });
 
