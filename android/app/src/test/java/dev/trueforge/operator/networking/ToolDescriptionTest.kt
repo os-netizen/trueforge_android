@@ -107,3 +107,27 @@ class ToolDescriptionTest {
         assertEquals(emptyList<TaskRunClient.ToolDetail>(), reader.read(fragment(" "))!!.toolDetails)
     }
 }
+
+/**
+ * The one wire-visible half of "typing in the same box continues the session":
+ * the server opens a new session when `runId` is absent and adds a turn when
+ * it is present, so its presence is the whole contract.
+ */
+class RunRequestBodyTest {
+
+    @Test
+    fun `a fresh task sends no run id`() {
+        assertEquals(
+            """{"prompt":"open WhatsApp","deviceId":"cph2491-ffd7"}""",
+            TaskRunClient.requestBody("open WhatsApp", "cph2491-ffd7", null),
+        )
+    }
+
+    @Test
+    fun `a continued task carries the run it belongs to`() {
+        assertEquals(
+            """{"prompt":"now send another","deviceId":"cph2491-ffd7","runId":"01m197dj4n5h"}""",
+            TaskRunClient.requestBody("now send another", "cph2491-ffd7", "01m197dj4n5h"),
+        )
+    }
+}

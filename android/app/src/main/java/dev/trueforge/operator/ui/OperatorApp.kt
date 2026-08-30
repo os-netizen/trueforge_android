@@ -96,6 +96,7 @@ fun OperatorApp(
     onStopTask: () -> Unit = {},
     onMicTap: () -> Unit = {},
     onClearResult: () -> Unit = {},
+    onNewTask: () -> Unit = {},
 ) {
     TrueForgeTheme {
         // Saveable, not remembered: a rotation must not drop the user back
@@ -136,6 +137,7 @@ fun OperatorApp(
                         onStop = onStopTask,
                         onMicTap = onMicTap,
                         onClearResult = onClearResult,
+                        onNewTask = onNewTask,
                     )
 
                     Screen.Settings -> SettingsScreen(

@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -45,6 +46,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -76,6 +78,7 @@ fun HomeScreen(
     onStop: () -> Unit,
     onMicTap: () -> Unit,
     onClearResult: () -> Unit,
+    onNewTask: () -> Unit,
 ) {
     val hasRunSurface = task.runActive ||
         task.steps.isNotEmpty() ||
@@ -89,19 +92,35 @@ fun HomeScreen(
     ) {
         HomeHeader(onOpenSettings = onOpenSettings)
 
-        StatusPill(
-            label = readinessLabel,
-            detail = readinessDetail,
-            tint = when {
-                task.runActive -> MaterialTheme.colorScheme.primary
-                ready -> ColorSchemeReady
-                else -> MaterialTheme.colorScheme.error
-            },
-            container = if (ready || task.runActive) MaterialTheme.colorScheme.surface
-            else MaterialTheme.colorScheme.errorContainer,
-            pulsing = task.runActive,
-            modifier = Modifier.clickable(enabled = !ready) { onOpenSettings() },
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            StatusPill(
+                label = readinessLabel,
+                detail = readinessDetail,
+                tint = when {
+                    task.runActive -> MaterialTheme.colorScheme.primary
+                    ready -> ColorSchemeReady
+                    else -> MaterialTheme.colorScheme.error
+                },
+                container = if (ready || task.runActive) MaterialTheme.colorScheme.surface
+                else MaterialTheme.colorScheme.errorContainer,
+                pulsing = task.runActive,
+                modifier = Modifier.clickable(enabled = !ready) { onOpenSettings() },
+            )
+            Spacer(Modifier.weight(1f))
+            // Only once there is something to clear. Mid-run the button in
+            // this corner would compete with Stop, which is the real answer
+            // to "I want out of this".
+            AnimatedVisibility(
+                visible = hasRunSurface && !task.runActive,
+                enter = fadeIn(),
+                exit = fadeOut(),
+            ) {
+                NewTaskButton(onClick = onNewTask)
+            }
+        }
 
         Box(
             modifier = Modifier
@@ -162,6 +181,40 @@ private val SUGGESTIONS = listOf(
     "Play something on Spotify",
     "Book a cab to the airport",
 )
+
+/**
+ * The way back to an empty screen. Deliberately a labelled pill rather than
+ * another glyph: "start over" is not something anyone should have to guess at
+ * from an icon, and the result card's small dismiss cross clearly did not say
+ * it.
+ */
+@Composable
+private fun NewTaskButton(onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = PillShape,
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(
+                OperatorIcons.Plus,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                "New task",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+    }
+}
 
 @Composable
 private fun HomeHeader(onOpenSettings: () -> Unit) {
@@ -398,15 +451,25 @@ private fun formatElapsed(millis: Long): String {
 @Composable
 private fun StepRow(step: RunStep, isLast: Boolean, isCurrent: Boolean) {
     val accent = when (step.kind) {
+        RunStep.Kind.Prompt -> MaterialTheme.colorScheme.primary
         RunStep.Kind.Tool ->
             if (isCurrent) MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.outline
         RunStep.Kind.Approval, RunStep.Kind.Question -> MaterialTheme.colorScheme.primary
         RunStep.Kind.Failure -> MaterialTheme.colorScheme.error
     }
-    Row(modifier = Modifier.fillMaxWidth()) {
+    // IntrinsicSize.Min gives the row a height before its children are laid
+    // out, which is what lets the rail fill it — a weighted connector inside
+    // a wrap-content column measures to zero and draws nothing.
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min),
+    ) {
         Column(
-            modifier = Modifier.width(22.dp),
+            modifier = Modifier
+                .width(22.dp)
+                .fillMaxHeight(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Box(Modifier.padding(top = 5.dp)) {
@@ -430,7 +493,11 @@ private fun StepRow(step: RunStep, isLast: Boolean, isCurrent: Boolean) {
         ) {
             Text(
                 step.detail ?: step.title,
-                style = MaterialTheme.typography.bodyMedium,
+                style = if (step.kind == RunStep.Kind.Prompt) {
+                    MaterialTheme.typography.titleSmall
+                } else {
+                    MaterialTheme.typography.bodyMedium
+                },
                 color = if (isCurrent || step.kind != RunStep.Kind.Tool) {
                     MaterialTheme.colorScheme.onSurface
                 } else {
@@ -534,7 +601,13 @@ private fun Composer(
             ) {
                 if (task.prompt.isEmpty()) {
                     Text(
-                        if (task.micListening) "Listening…" else "What should the agent do?",
+                        when {
+                            task.micListening -> "Listening…"
+                            // Sending now adds a turn to the session that is
+                            // already on screen, so say so.
+                            task.runId != null -> "Say what to do next…"
+                            else -> "What should the agent do?"
+                        },
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

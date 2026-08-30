@@ -28,6 +28,7 @@ import dev.trueforge.operator.snapshots.ActionStatus
 import dev.trueforge.operator.snapshots.ScreenSnapshot
 import dev.trueforge.operator.snapshots.WireJson
 import dev.trueforge.operator.ui.OperatorApp
+import dev.trueforge.operator.ui.RunStep
 import dev.trueforge.operator.ui.TaskUiState
 import dev.trueforge.operator.ui.applying
 import dev.trueforge.operator.ui.VoiceInputController
@@ -124,6 +125,7 @@ class MainActivity : ComponentActivity() {
                 onStopTask = ::stopTask,
                 onMicTap = { onMicTap(micPermissionLauncher) },
                 onClearResult = ::clearRunSurface,
+                onNewTask = ::startNewTask,
             )
         }
 
@@ -131,7 +133,21 @@ class MainActivity : ComponentActivity() {
         observePendingQuestions()
     }
 
-    /** Clears the finished run so Home returns to its resting state. */
+    /**
+     * Back to a blank screen: the finished run *and* the prompt that produced
+     * it. Distinct from [clearRunSurface], which only dismisses the result and
+     * leaves the prompt so a task can be tweaked and sent again.
+     */
+    private fun startNewTask() {
+        if (task.runActive) return
+        voice.stop()
+        clearRunSurface()
+        // Dropping the run id is what makes the next send a *new* session
+        // rather than another turn on the finished one.
+        task = task.copy(prompt = "", runId = null, micError = null, micListening = false)
+    }
+
+    /** Dismisses the finished run's result, keeping the prompt for a re-run. */
     private fun clearRunSurface() {
         if (task.runActive) return
         task = task.copy(
@@ -151,11 +167,20 @@ class MainActivity : ComponentActivity() {
         voice.stop()
         stopRequested = false
         stopCancellationSent = false
+        // A run id in hand means this prompt is the next turn of a session
+        // that is still on screen: the agent keeps what it just observed, and
+        // the timeline keeps the steps that got it there. "New task" is what
+        // drops the id and starts something fresh.
+        val continuing = task.runId
+        val promptStep = RunStep(
+            key = "prompt-${System.currentTimeMillis()}",
+            kind = RunStep.Kind.Prompt,
+            title = prompt,
+        )
         task = task.copy(
             runActive = true,
-            runId = null,
             statusLine = "Starting…",
-            steps = emptyList(),
+            steps = if (continuing == null) listOf(promptStep) else task.steps + promptStep,
             output = null,
             error = null,
             micError = null,
@@ -163,7 +188,7 @@ class MainActivity : ComponentActivity() {
         )
         runJob = lifecycleScope.launch {
             try {
-                runClient.start(prompt).collect(::applyRunEvent)
+                runClient.start(prompt, continuing).collect(::applyRunEvent)
                 // A stream that ends without a terminal envelope still has to
                 // release the UI, or Send stays disabled forever.
                 if (task.runActive) {

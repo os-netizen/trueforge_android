@@ -18,7 +18,7 @@ data class RunStep(
     val toolName: String? = null,
     val detail: String? = null,
 ) {
-    enum class Kind { Tool, Approval, Question, Failure }
+    enum class Kind { Prompt, Tool, Approval, Question, Failure }
 }
 
 /**
