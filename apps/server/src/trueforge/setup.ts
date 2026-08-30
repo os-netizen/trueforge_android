@@ -113,6 +113,12 @@ export interface EnsureAgentOptions {
   reasoningEffort?: ReasoningEffort;
 }
 
+/**
+ * Turn budget for one run. Exported so the dashboard reports the real value
+ * rather than a second copy that drifts out of step with the manifest.
+ */
+export const AGENT_ITERATION_LIMIT = 200;
+
 export async function ensureAgent(opts: EnsureAgentOptions): Promise<void> {
   const client = trueForgeClient();
 
@@ -134,7 +140,7 @@ export async function ensureAgent(opts: EnsureAgentOptions): Promise<void> {
       },
     ],
     config: {
-      iterationLimit: 200,
+      iterationLimit: AGENT_ITERATION_LIMIT,
       sandbox: { enabled: opts.sandbox ?? false },
       // Declared rather than left to the runtime default: visual navigation
       // recovery is isolated in the vision-recovery sub-agent from item 11.

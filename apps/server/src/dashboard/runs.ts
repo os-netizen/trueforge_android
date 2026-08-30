@@ -20,6 +20,7 @@ import {
 import {
   ANDROID_OPERATOR_INSTRUCTIONS,
   ensureAgent,
+  AGENT_ITERATION_LIMIT,
   registerMcpServer,
   registerModelProvider,
   sandboxAvailable,
@@ -255,7 +256,7 @@ export function describeAgent(): Record<string, unknown> {
     sandbox: sandboxAvailable(),
     gatedTools: ["commit_action"],
     subAgents: true,
-    iterationLimit: 40,
+    iterationLimit: AGENT_ITERATION_LIMIT,
     instructions: ANDROID_OPERATOR_INSTRUCTIONS,
   };
 }
