@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
@@ -28,6 +29,7 @@ import dev.trueforge.operator.snapshots.ScreenSnapshot
 import dev.trueforge.operator.snapshots.WireJson
 import dev.trueforge.operator.ui.OperatorApp
 import dev.trueforge.operator.ui.TaskUiState
+import dev.trueforge.operator.ui.applying
 import dev.trueforge.operator.ui.VoiceInputController
 import dev.trueforge.operator.util.DeviceIdentity
 import kotlinx.coroutines.Dispatchers
@@ -57,13 +59,15 @@ class MainActivity : ComponentActivity() {
         )
     }
     private var runJob: Job? = null
-    private var agentEventCount = 0
     private var stopRequested = false
     private var stopCancellationSent = false
     private lateinit var voice: VoiceInputController
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The UI draws its own background and pads for the system bars, so the
+        // task surface can run to the edges of the screen.
+        enableEdgeToEdge()
         serverUrl = DeviceConnectionService.serverUrl(this)
 
         val permissionLauncher = registerForActivityResult(
@@ -105,6 +109,7 @@ class MainActivity : ComponentActivity() {
                 onClickNode = { nodeId -> actionResultJson { clickNode(nodeId) } },
                 onSetText = { nodeId, text -> actionResultJson { setText(nodeId, text) } },
                 onGlobalAction = { kind -> actionResultJson { globalAction(kind) } },
+                deviceId = DeviceConnectionService.deviceId(this),
                 pendingApproval = pendingApproval,
                 onApprovalDecision = { requestId, decision ->
                     ApprovalCoordinator.resolve(this, requestId, decision, reason = null)
@@ -118,11 +123,24 @@ class MainActivity : ComponentActivity() {
                 onSendTask = ::sendTask,
                 onStopTask = ::stopTask,
                 onMicTap = { onMicTap(micPermissionLauncher) },
+                onClearResult = ::clearRunSurface,
             )
         }
 
         observePendingApprovals()
         observePendingQuestions()
+    }
+
+    /** Clears the finished run so Home returns to its resting state. */
+    private fun clearRunSurface() {
+        if (task.runActive) return
+        task = task.copy(
+            statusLine = "",
+            steps = emptyList(),
+            output = null,
+            error = null,
+            startedAtMs = null,
+        )
     }
 
     // --- Task entry -------------------------------------------------------
@@ -133,15 +151,15 @@ class MainActivity : ComponentActivity() {
         voice.stop()
         stopRequested = false
         stopCancellationSent = false
-        agentEventCount = 0
         task = task.copy(
             runActive = true,
             runId = null,
             statusLine = "Starting…",
-            log = emptyList(),
+            steps = emptyList(),
             output = null,
             error = null,
             micError = null,
+            startedAtMs = System.currentTimeMillis(),
         )
         runJob = lifecycleScope.launch {
             try {
@@ -173,30 +191,7 @@ class MainActivity : ComponentActivity() {
                 runCatching { runClient.cancel(event.runId) }
             }
         }
-        if (event.type == "agent.event") agentEventCount += 1
-        val statusLine = when (event.type) {
-            "run.created" -> "Starting…"
-            "run.started" -> "Agent working"
-            "agent.event" -> event.summary?.let { "Calling $it" }
-                ?: "Agent working ($agentEventCount events)"
-            "approval.pending" -> "Waiting for your approval…"
-            "question.pending" -> "Waiting for your answer…"
-            "approval.decided" -> event.summary ?: "Approval decided"
-            "run.completed" -> "Done"
-            "run.failed" -> "Failed"
-            else -> task.statusLine
-        }
-        val log = event.summary
-            ?.let { (task.log + it).takeLast(20) }
-            ?: task.log
-        task = task.copy(
-            runId = event.runId ?: task.runId,
-            statusLine = statusLine,
-            log = log,
-            output = event.output ?: task.output,
-            error = event.error ?: task.error,
-            runActive = if (event.isTerminal) false else task.runActive,
-        )
+        task = task.applying(event)
     }
 
     private fun stopTask() {

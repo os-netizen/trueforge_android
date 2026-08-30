@@ -1,35 +1,45 @@
 package dev.trueforge.operator.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.BackHandler
 import dev.trueforge.operator.accessibility.OperatorAccessibilityService
 import dev.trueforge.operator.approvals.ApprovalCoordinator
 import dev.trueforge.operator.questions.QuestionCoordinator
-import kotlinx.coroutines.launch
+import dev.trueforge.operator.ui.theme.PillShape
+import dev.trueforge.operator.ui.theme.TrueForgeTheme
 
 /**
  * Everything the task card on the phone needs to render. Held by
@@ -40,7 +50,9 @@ data class TaskUiState(
     val runActive: Boolean = false,
     val runId: String? = null,
     val statusLine: String = "",
-    val log: List<String> = emptyList(),
+    val steps: List<RunStep> = emptyList(),
+    /** Wall-clock start of the current run, for the elapsed readout. */
+    val startedAtMs: Long? = null,
     val output: String? = null,
     val error: String? = null,
     val micAvailable: Boolean = false,
@@ -48,10 +60,15 @@ data class TaskUiState(
     val micError: String? = null,
 )
 
+private enum class Screen { Home, Settings }
+
 /**
- * Milestone 3 app surface: connection controls + local dev tools.
- * Brief 03 adds the task card on top — the phone is the primary surface for
- * starting and stopping a run; the dashboard stays the rich observability one.
+ * App shell: theme, the two screens, and the two modal interrupts.
+ *
+ * The split is the point. Home is a voice-first task surface with nothing on
+ * it but the task and its run; every knob — permissions, the bridge URL, the
+ * raw accessibility probes — lives behind Settings, because a user opens this
+ * app to say a sentence, not to read a configuration report.
  */
 @Composable
 fun OperatorApp(
@@ -68,6 +85,7 @@ fun OperatorApp(
     onClickNode: suspend (String) -> String,
     onSetText: suspend (String, String) -> String,
     onGlobalAction: suspend (OperatorAccessibilityService.GlobalActionKind) -> String,
+    deviceId: String = "",
     pendingApproval: ApprovalCoordinator.PendingApproval? = null,
     onApprovalDecision: (String, String) -> Unit = { _, _ -> },
     pendingQuestion: QuestionCoordinator.PendingQuestion? = null,
@@ -77,279 +95,114 @@ fun OperatorApp(
     onSendTask: () -> Unit = {},
     onStopTask: () -> Unit = {},
     onMicTap: () -> Unit = {},
+    onClearResult: () -> Unit = {},
 ) {
-    val scope = rememberCoroutineScope()
-    val scroll = rememberScrollState()
-    var snapshotJson by remember { mutableStateOf("") }
-    var resultJson by remember { mutableStateOf("") }
-    var nodeIdInput by remember { mutableStateOf("n1") }
-    var textInput by remember { mutableStateOf("") }
+    TrueForgeTheme {
+        // Saveable, not remembered: a rotation must not drop the user back
+        // to Home and throw away the Settings composition with it.
+        var screen by rememberSaveable { mutableStateOf(Screen.Home) }
+        val ready = connected && serviceRunning
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(scroll)
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Text("TrueForge Operator", style = MaterialTheme.typography.headlineSmall)
+        BackHandler(enabled = screen == Screen.Settings) { screen = Screen.Home }
 
-        TaskCard(
-            task = task,
-            canSend = connected && serviceRunning,
-            onPromptChange = onTaskPromptChange,
-            onSend = onSendTask,
-            onStop = onStopTask,
-            onMicTap = onMicTap,
-        )
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    if (serviceRunning) "Accessibility runtime: ACTIVE"
-                    else "Accessibility runtime: NOT ENABLED",
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                OutlinedButton(onClick = onOpenAccessibilitySettings) {
-                    Text("Open accessibility settings")
-                }
-                OutlinedButton(onClick = onOpenNotificationListenerSettings) {
-                    Text("Enable media session access")
-                }
-            }
-        }
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    "Agent connection: $connectionState",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = if (connected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.error,
-                )
-                OutlinedTextField(
-                    value = serverUrl,
-                    onValueChange = onServerUrlChange,
-                    label = { Text("bridge server url") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onConnect, enabled = serviceRunning && !connected) {
-                        Text("Connect")
-                    }
-                    OutlinedButton(onClick = onDisconnect, enabled = connected) {
-                        Text("Disconnect")
-                    }
-                }
-            }
-        }
-
-        Button(
-            onClick = { snapshotJson = onCaptureSnapshot() },
-            enabled = serviceRunning,
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background,
         ) {
-            Text("Capture screen snapshot")
-        }
-
-        if (snapshotJson.isNotEmpty()) {
-            JsonCard("Snapshot", snapshotJson)
-        }
-
-        OutlinedTextField(
-            value = nodeIdInput,
-            onValueChange = { nodeIdInput = it },
-            label = { Text("node id") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-        )
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = {
-                    scope.launch { resultJson = onClickNode(nodeIdInput) }
+            AnimatedContent(
+                targetState = screen,
+                transitionSpec = {
+                    val forward = targetState == Screen.Settings
+                    val width = { w: Int -> if (forward) w else -w }
+                    (slideInHorizontally(tween(260), width) + fadeIn(tween(180)))
+                        .togetherWith(
+                            slideOutHorizontally(tween(260)) { -width(it) } + fadeOut(tween(180)),
+                        )
                 },
-                enabled = serviceRunning,
-            ) {
-                Text("Click node")
+                label = "screen",
+                modifier = Modifier
+                    .fillMaxSize()
+                    .safeDrawingPadding(),
+            ) { current ->
+                when (current) {
+                    Screen.Home -> HomeScreen(
+                        task = task,
+                        ready = ready,
+                        readinessLabel = readinessLabel(task, ready, serviceRunning, connected),
+                        readinessDetail = readinessDetail(task, ready, serviceRunning, connected),
+                        onOpenSettings = { screen = Screen.Settings },
+                        onPromptChange = onTaskPromptChange,
+                        onSend = onSendTask,
+                        onStop = onStopTask,
+                        onMicTap = onMicTap,
+                        onClearResult = onClearResult,
+                    )
+
+                    Screen.Settings -> SettingsScreen(
+                        serviceRunning = serviceRunning,
+                        connected = connected,
+                        connectionState = connectionState,
+                        serverUrl = serverUrl,
+                        deviceId = deviceId,
+                        onServerUrlChange = onServerUrlChange,
+                        onConnect = onConnect,
+                        onDisconnect = onDisconnect,
+                        onOpenAccessibilitySettings = onOpenAccessibilitySettings,
+                        onOpenNotificationListenerSettings = onOpenNotificationListenerSettings,
+                        onCaptureSnapshot = onCaptureSnapshot,
+                        onClickNode = onClickNode,
+                        onSetText = onSetText,
+                        onGlobalAction = onGlobalAction,
+                        onBack = { screen = Screen.Home },
+                    )
+                }
             }
         }
 
-        OutlinedTextField(
-            value = textInput,
-            onValueChange = { textInput = it },
-            label = { Text("text to set") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-        )
-
-        Button(
-            onClick = {
-                scope.launch { resultJson = onSetText(nodeIdInput, textInput) }
-            },
-            enabled = serviceRunning,
-        ) {
-            Text("Set text")
+        if (pendingApproval != null) {
+            ApprovalDialog(
+                pending = pendingApproval,
+                onDecision = { decision -> onApprovalDecision(pendingApproval.requestId, decision) },
+            )
         }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
-                onClick = {
-                    scope.launch {
-                        resultJson =
-                            onGlobalAction(OperatorAccessibilityService.GlobalActionKind.BACK)
-                    }
-                },
-                enabled = serviceRunning,
-            ) { Text("Back") }
-            OutlinedButton(
-                onClick = {
-                    scope.launch {
-                        resultJson =
-                            onGlobalAction(OperatorAccessibilityService.GlobalActionKind.HOME)
-                    }
-                },
-                enabled = serviceRunning,
-            ) { Text("Home") }
+        if (pendingQuestion != null) {
+            QuestionDialog(
+                pending = pendingQuestion,
+                onAnswer = { answer -> onQuestionAnswer(pendingQuestion.requestId, answer) },
+            )
         }
-
-        if (resultJson.isNotEmpty()) {
-            JsonCard("Action result", resultJson)
-        }
-    }
-
-    if (pendingApproval != null) {
-        ApprovalDialog(
-            pending = pendingApproval,
-            onDecision = { decision -> onApprovalDecision(pendingApproval.requestId, decision) },
-        )
-    }
-    if (pendingQuestion != null) {
-        QuestionDialog(
-            pending = pendingQuestion,
-            onAnswer = { answer -> onQuestionAnswer(pendingQuestion.requestId, answer) },
-        )
     }
 }
 
 /**
- * Task entry, live run status, and Stop. Send stays disabled while
- * disconnected, while the accessibility runtime is off, and for the whole of
- * an active run: one task at a time keeps the phone's state legible.
+ * One word for the whole stack. A run in flight outranks readiness, and when
+ * two things are missing the accessibility runtime is named first because
+ * connecting without it gets you nowhere.
  */
-@Composable
-private fun TaskCard(
+private fun readinessLabel(
     task: TaskUiState,
-    canSend: Boolean,
-    onPromptChange: (String) -> Unit,
-    onSend: () -> Unit,
-    onStop: () -> Unit,
-    onMicTap: () -> Unit,
-) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text("Task", style = MaterialTheme.typography.titleMedium)
+    ready: Boolean,
+    serviceRunning: Boolean,
+    connected: Boolean,
+): String = when {
+    task.runActive -> "Working"
+    ready -> "Ready"
+    !serviceRunning -> "Runtime off"
+    !connected -> "Not connected"
+    else -> "Not ready"
+}
 
-            OutlinedTextField(
-                value = task.prompt,
-                onValueChange = onPromptChange,
-                label = { Text(if (task.micListening) "Listening…" else "What should the agent do?") },
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 2,
-                enabled = !task.runActive,
-            )
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // Hidden entirely when the device has no recognizer, rather
-                // than offering a button that can only fail.
-                if (task.micAvailable) {
-                    OutlinedButton(
-                        onClick = onMicTap,
-                        enabled = !task.runActive,
-                    ) {
-                        Text(if (task.micListening) "◉ Listening…" else "🎤 Speak")
-                    }
-                }
-                Button(
-                    onClick = onSend,
-                    enabled = canSend && !task.runActive && task.prompt.isNotBlank(),
-                ) {
-                    Text("Send")
-                }
-                if (task.runActive) {
-                    Button(
-                        onClick = onStop,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error,
-                        ),
-                    ) {
-                        Text("Stop")
-                    }
-                }
-            }
-
-            if (task.micError != null) {
-                Text(
-                    task.micError,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-
-            if (!canSend && !task.runActive) {
-                Text(
-                    "Connect the agent and enable the accessibility runtime to send a task.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-
-            if (task.statusLine.isNotEmpty()) {
-                Text(task.statusLine, style = MaterialTheme.typography.bodyMedium)
-            }
-
-            if (task.log.isNotEmpty()) {
-                Text(
-                    task.log.joinToString("\n"),
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-
-            if (task.output != null) {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text("Result", style = MaterialTheme.typography.titleSmall)
-                        Text(task.output.take(4000), style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-            }
-
-            if (task.error != null) {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text(
-                            "Failed",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                        Text(
-                            task.error.take(2000),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
-                }
-            }
-        }
-    }
+private fun readinessDetail(
+    task: TaskUiState,
+    ready: Boolean,
+    serviceRunning: Boolean,
+    connected: Boolean,
+): String? = when {
+    task.runActive -> null
+    ready -> null
+    !serviceRunning -> "tap to enable"
+    !connected -> "tap to connect"
+    else -> null
 }
 
 /**
@@ -366,26 +219,39 @@ private fun ApprovalDialog(
 
     AlertDialog(
         onDismissRequest = {},
-        title = { Text("Approve this action?") },
+        shape = MaterialTheme.shapes.extraLarge,
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = { Text("Approve this action?", style = MaterialTheme.typography.headlineSmall) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(pending.intent, style = MaterialTheme.typography.bodyLarge)
-                TextButton(onClick = { showDetails = !showDetails }) {
+                TextButton(
+                    onClick = { showDetails = !showDetails },
+                    contentPadding = ButtonDefaults.TextButtonWithIconContentPadding,
+                ) {
                     Text(if (showDetails) "Hide details" else "Show details")
                 }
                 if (showDetails) {
-                    Text(
-                        pending.actionJson.take(2000),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                    Surface(
+                        shape = MaterialTheme.shapes.medium,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            pending.actionJson.take(2000),
+                            style = MaterialTheme.typography.bodySmall
+                                .copy(fontFamily = FontFamily.Monospace),
+                            modifier = Modifier.padding(12.dp),
+                        )
+                    }
                 }
             }
         },
         confirmButton = {
-            Button(onClick = { onDecision("allow") }) { Text("Allow") }
+            Button(onClick = { onDecision("allow") }, shape = PillShape) { Text("Allow") }
         },
         dismissButton = {
-            OutlinedButton(onClick = { onDecision("deny") }) { Text("Deny") }
+            OutlinedButton(onClick = { onDecision("deny") }, shape = PillShape) { Text("Deny") }
         },
     )
 }
@@ -401,23 +267,31 @@ private fun QuestionDialog(
 
     AlertDialog(
         onDismissRequest = {},
-        title = { Text("Agent needs your input") },
+        shape = MaterialTheme.shapes.extraLarge,
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = { Text("One question", style = MaterialTheme.typography.headlineSmall) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(pending.question, style = MaterialTheme.typography.bodyLarge)
                 pending.options.forEach { option ->
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        RadioButton(
-                            selected = selected == option && freeText.isBlank(),
-                            onClick = {
-                                selected = option
-                                freeText = ""
-                            },
-                        )
-                        TextButton(onClick = {
+                    val isSelected = selected == option && freeText.isBlank()
+                    Surface(
+                        onClick = {
                             selected = option
                             freeText = ""
-                        }) { Text(option) }
+                        },
+                        shape = MaterialTheme.shapes.medium,
+                        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(end = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = isSelected, onClick = null)
+                            Text(option, style = MaterialTheme.typography.bodyMedium)
+                        }
                     }
                 }
                 OutlinedTextField(
@@ -427,25 +301,20 @@ private fun QuestionDialog(
                         if (it.isNotBlank()) selected = null
                     },
                     label = { Text("Or type your answer") },
+                    shape = MaterialTheme.shapes.medium,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
         },
         confirmButton = {
-            Button(onClick = { onAnswer(answer) }, enabled = answer != null) { Text("Submit") }
+            Button(
+                onClick = { onAnswer(answer) },
+                enabled = answer != null,
+                shape = PillShape,
+            ) { Text("Submit") }
         },
         dismissButton = {
-            OutlinedButton(onClick = { onAnswer(null) }) { Text("Cancel run") }
+            OutlinedButton(onClick = { onAnswer(null) }, shape = PillShape) { Text("Cancel run") }
         },
     )
-}
-
-@Composable
-private fun JsonCard(title: String, json: String) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(title, style = MaterialTheme.typography.titleSmall)
-            Text(json.take(6000), style = MaterialTheme.typography.bodySmall)
-        }
-    }
 }
