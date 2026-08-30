@@ -89,7 +89,9 @@ const builders = new Map<string, TranscriptBuilder>();
 function targetBoundPrompt(prompt: string, deviceId: string): string {
   const deviceTarget = createDeviceTarget(deviceId);
   return `[System routing context: operate only the run-bound Android device. Include ` +
-    `deviceTarget "${deviceTarget}" in every android-tool-bridge call.]\n\n${prompt}`;
+    `deviceTarget "${deviceTarget}" in every android-tool-bridge call. If you create a ` +
+    `vision-recovery sub-agent, copy this exact opaque deviceTarget into its input; child ` +
+    `agents do not inherit this routing context.]\n\n${prompt}`;
 }
 
 export function listDashboardRuns(): DashboardRun[] {

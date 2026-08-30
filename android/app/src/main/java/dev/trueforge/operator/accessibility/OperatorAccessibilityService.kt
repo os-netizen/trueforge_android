@@ -311,19 +311,64 @@ class OperatorAccessibilityService : AccessibilityService() {
         if (captured?.snapshotId != snapshotId) return result(started, ActionStatus.STALE_SNAPSHOT)
         val ref = captured?.nodeRefs?.get(nodeId)
             ?: return result(started, ActionStatus.STALE_SNAPSHOT)
+        // Jetpack Compose apps can expose a labelled semantics wrapper rather
+        // than the underlying editor. Focusing the requested target may make a
+        // different, otherwise hidden node available through FOCUS_INPUT.
+        val ok = setTextWithFocusedFallback(
+            target = ref,
+            value = value,
+            setText = ::performSetText,
+            focus = ::focusTextTarget,
+            awaitFocused = ::awaitInputFocus,
+        )
+        return if (ok) successWithChange(started)
+        else result(started, ActionStatus.FAILED, error = "Node did not accept text")
+    }
+
+    private fun performSetText(node: AccessibilityNodeInfo, value: String): Boolean {
         val args = Bundle().apply {
             putCharSequence(
                 AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
                 value,
             )
         }
-        val ok = try {
-            ref.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        return try {
+            node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
         } catch (_: IllegalStateException) {
             false
         }
-        return if (ok) successWithChange(started)
-        else result(started, ActionStatus.FAILED, error = "Node did not accept text")
+    }
+
+    private fun focusTextTarget(node: AccessibilityNodeInfo) {
+        try {
+            node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return
+        } catch (_: IllegalStateException) {
+            // Fall through to the same bounded gesture used by click_node.
+        }
+        val rect = Rect().also { node.getBoundsInScreen(it) }
+        if (rect.isEmpty) return
+        val path = Path().apply { moveTo(rect.exactCenterX(), rect.exactCenterY()) }
+        dispatchGesture(
+            GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, 60L))
+                .build(),
+            null,
+            null,
+        )
+    }
+
+    private suspend fun awaitInputFocus(): AccessibilityNodeInfo? {
+        repeat(5) {
+            val focused = try {
+                rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            } catch (_: IllegalStateException) {
+                null
+            }
+            if (focused != null) return focused
+            kotlinx.coroutines.delay(100)
+        }
+        return null
     }
 
     suspend fun setText(nodeId: String, value: String): ActionResult =

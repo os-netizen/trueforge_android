@@ -88,6 +88,19 @@ function finishedTurn(content: string): unknown[] {
   }];
 }
 
+function cancelledTurn(reason?: string): unknown[] {
+  return [{
+    type: "turn.done",
+    id: "done-cancelled",
+    createdAt: "2026-08-29T00:00:05Z",
+    state: {
+      status: "cancelled",
+      reason,
+      completedAt: "2026-08-29T00:00:05Z",
+    },
+  }];
+}
+
 function questionTurn(): unknown[] {
   return [
     {
@@ -174,6 +187,23 @@ test("a denial resumes with a reason the model can report on", async () => {
     approval: { status: "deny", reason: "User denied on device" },
   }]);
   assert.equal(result.approvals[0]?.decision, "deny");
+});
+
+test("a runtime-cancelled turn fails with the cancellation reason", async () => {
+  const { client } = fakeClient([cancelledTurn("server-execution-timeout")]);
+
+  const result = await runTurnLoopWithApprovals({
+    client,
+    sessionId: "session-1",
+    prompt: "book a cab",
+    decide: async () => ({ decision: "deny" }),
+  });
+
+  assert.equal(result.turnStatus, "error");
+  assert.equal(
+    result.turnError,
+    "TrueForge turn cancelled: server-execution-timeout",
+  );
 });
 
 test("a client-side question resumes as user.tool_response with the selected option", async () => {
