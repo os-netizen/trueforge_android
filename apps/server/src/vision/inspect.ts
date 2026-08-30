@@ -35,6 +35,7 @@ export interface VisionGatewayLike {
 }
 
 export interface InspectRequest {
+  deviceId?: string;
   /** What the operator needs to know, e.g. "which control mutes the call?". */
   question: string;
   /** What the operator expected to be there, if it has a hypothesis. */
@@ -309,9 +310,13 @@ export async function inspectScreenVisually(
   req: InspectRequest,
   deps: InspectDeps = {},
 ): Promise<VisionResolution & { frame?: FrameRef }> {
-  const online = gateway.listDevices().find((d) => gateway.isOnline(d.deviceId));
-  if (!online) throw new Error("No Android device is connected to the bridge");
-  const deviceId = online.deviceId;
+  const deviceId = req.deviceId
+    ?? gateway.listDevices().find((device) => gateway.isOnline(device.deviceId))?.deviceId;
+  if (!deviceId) throw new Error("No Android device is connected to the bridge");
+  if (!gateway.listDevices().some((device) => device.deviceId === deviceId)) {
+    throw new Error(`Unknown Android device '${deviceId}'`);
+  }
+  if (!gateway.isOnline(deviceId)) throw new Error(`Selected Android device '${deviceId}' is offline`);
 
   // Captured together so the nodes describe the frame the model is looking at.
   // They are still two round trips, so a fast-moving screen can drift; that is

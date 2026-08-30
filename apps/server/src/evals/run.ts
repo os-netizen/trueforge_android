@@ -130,7 +130,8 @@ async function runCase(testCase: AndroidEvalCase): Promise<boolean> {
     loop = await runTurnLoopWithApprovals({
       client,
       sessionId: session.data.id,
-      prompt: testCase.prompt,
+      prompt: `[System routing context: include deviceId "${deviceId}" in every ` +
+        `android-tool-bridge call.]\n\n${testCase.prompt}`,
       decide: async (info) => {
         const decision = testCase.approvalDecision?.({
           intent: info.intent,

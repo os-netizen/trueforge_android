@@ -47,6 +47,15 @@ class DeviceConnectionService : Service() {
 
         fun serverUrlDefault(): String = DEFAULT_URL
 
+        fun deviceId(context: Context): String =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(KEY_DEVICE_ID, null).let {
+                    it ?: DeviceIdentity.deviceId(context).also { id ->
+                        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                            .edit().putString(KEY_DEVICE_ID, id).apply()
+                    }
+                }
+
         fun saveServerUrl(context: Context, url: String) {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit().putString(KEY_SERVER_URL, url).apply()
@@ -121,13 +130,7 @@ class DeviceConnectionService : Service() {
         super.onDestroy()
     }
 
-    private fun prefsDeviceId(): String =
-        getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_DEVICE_ID, null).let {
-            it ?: DeviceIdentity.deviceId(this).also { id ->
-                getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                    .edit().putString(KEY_DEVICE_ID, id).apply()
-            }
-        }
+    private fun prefsDeviceId(): String = deviceId(this)
 
     private fun createChannel() {
         val manager = getSystemService(NotificationManager::class.java)

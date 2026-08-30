@@ -35,11 +35,11 @@ export async function getJson(path, options = {}) {
   return response.json();
 }
 
-export function startRun({ prompt, runId }, signal) {
+export function startRun({ prompt, runId, deviceId }, signal) {
   return fetch(`${API}/dashboard/runs`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(runId ? { prompt, runId } : { prompt }),
+    body: JSON.stringify(runId ? { prompt, runId, deviceId } : { prompt, deviceId }),
     signal,
   });
 }

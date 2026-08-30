@@ -51,12 +51,47 @@ test("commit_action is registered as the gated commit surface", async () => {
   await client.close();
 });
 
+test("a tool call routes to its explicit device instead of the first connected device", async () => {
+  const sent: RecordedRequest[] = [];
+  const gateway: DeviceGatewayLike = {
+    listDevices: () => [{ deviceId: "tablet-1" }, { deviceId: "nord-1" }],
+    isOnline: () => true,
+    sendRequest: async (deviceId, request, opts) => {
+      sent.push({ deviceId, request, opts });
+      return { ok: true, result: { foregroundPackage: "example" } };
+    },
+  };
+  const client = await connectedClient(gateway);
+  const result = await client.callTool({
+    name: "get_device_state",
+    arguments: { deviceId: "nord-1" },
+  });
+
+  assert.notEqual(result.isError, true);
+  assert.equal(sent[0]?.deviceId, "nord-1");
+  await client.close();
+});
+
+test("a tool call refuses an unknown device instead of falling back", async () => {
+  const { gateway, sent } = fakeGateway({ foregroundPackage: "example" });
+  const client = await connectedClient(gateway);
+  const result = await client.callTool({
+    name: "get_device_state",
+    arguments: { deviceId: "nord-unknown" },
+  });
+
+  assert.equal(result.isError, true);
+  assert.deepEqual(sent, []);
+  await client.close();
+});
+
 test("commit_action forwards an execute_action to the device and unwraps the result", async () => {
   const { gateway, sent } = fakeGateway({ status: "success", screenChanged: true });
   const client = await connectedClient(gateway);
   const result = await client.callTool({
     name: "commit_action",
     arguments: {
+      deviceId: "tablet-1",
       intent: "Dismiss the EVAL-APPROVAL target notification",
       action: { type: "notification_action", key: "0|com.android.shell|1|evalTag|2000", action: "dismiss" },
     },
@@ -82,6 +117,7 @@ test("commit_action rejects an intent too short to display", async () => {
   const result = await client.callTool({
     name: "commit_action",
     arguments: {
+      deviceId: "tablet-1",
       intent: "send",
       action: { type: "global_action", action: "back" },
     },
@@ -131,7 +167,7 @@ test("execute_action refuses a consequential notification dismissal", async () =
   const client = await connectedClient(gateway);
   const result = await client.callTool({
     name: "execute_action",
-    arguments: { action: { type: "notification_action", key: "k1", action: "dismiss" } },
+    arguments: { deviceId: "tablet-1", action: { type: "notification_action", key: "k1", action: "dismiss" } },
   });
 
   assert.equal(result.isError, true);
@@ -145,7 +181,7 @@ test("execute_and_observe refuses a consequential notification action", async ()
   const client = await connectedClient(gateway);
   const result = await client.callTool({
     name: "execute_and_observe",
-    arguments: { action: { type: "notification_action", key: "k1", action: "invoke" } },
+    arguments: { deviceId: "tablet-1", action: { type: "notification_action", key: "k1", action: "invoke" } },
   });
 
   assert.equal(result.isError, true);
@@ -157,7 +193,7 @@ test("opening a notification stays on the ungated path", async () => {
   const client = await connectedClient(gateway);
   const result = await client.callTool({
     name: "execute_action",
-    arguments: { action: { type: "notification_action", key: "k1", action: "open" } },
+    arguments: { deviceId: "tablet-1", action: { type: "notification_action", key: "k1", action: "open" } },
   });
 
   assert.notEqual(result.isError, true);
@@ -170,6 +206,7 @@ test("commit_action still performs the dismissal the ungated tools refuse", asyn
   const result = await client.callTool({
     name: "commit_action",
     arguments: {
+      deviceId: "tablet-1",
       intent: "Dismiss the EVAL-JUNK notification",
       action: { type: "notification_action", key: "k1", action: "dismiss" },
     },
