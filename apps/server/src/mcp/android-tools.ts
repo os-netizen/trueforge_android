@@ -23,18 +23,31 @@ import { resolveDeviceTarget } from "../devices/target.js";
 
 export const ANDROID_TOOL_BRIDGE_NAME = "android-tool-bridge";
 
+/**
+ * `snapshotId` is optional here only so a misplaced one can be recovered.
+ *
+ * Node actions still require it - `resolveActionSnapshot` rejects a call that
+ * supplies it nowhere. Models put it beside the action instead of inside it
+ * often enough to be worth absorbing: schema-level rejection costs a whole
+ * model turn, and the intent is never ambiguous.
+ */
+const SnapshotIdSchema = z
+  .string()
+  .optional()
+  .describe("Id of the snapshot this node id came from. Required for node actions.");
+
 const DeviceActionSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("click_node"), snapshotId: z.string(), nodeId: z.string() }),
-  z.object({ type: z.literal("long_click_node"), snapshotId: z.string(), nodeId: z.string() }),
+  z.object({ type: z.literal("click_node"), snapshotId: SnapshotIdSchema, nodeId: z.string() }),
+  z.object({ type: z.literal("long_click_node"), snapshotId: SnapshotIdSchema, nodeId: z.string() }),
   z.object({
     type: z.literal("set_text"),
-    snapshotId: z.string(),
+    snapshotId: SnapshotIdSchema,
     nodeId: z.string(),
     text: z.string(),
   }),
   z.object({
     type: z.literal("scroll"),
-    snapshotId: z.string(),
+    snapshotId: SnapshotIdSchema,
     direction: z.enum(["up", "down", "left", "right"]),
     nodeId: z.string().optional(),
   }),
@@ -106,6 +119,30 @@ function assertNotConsequential(action: DeviceAction): void {
       "human approval. This also applies to calls made from a sandbox script.",
     );
   }
+}
+
+/** Node actions that cannot run without knowing which snapshot the id came from. */
+const NODE_ACTION_TYPES = new Set(["click_node", "long_click_node", "set_text", "scroll"]);
+
+/**
+ * Fills in an action's snapshotId from the tool-level one when it was put
+ * beside the action instead of inside it, and refuses when it is absent
+ * entirely. The action's own value always wins.
+ */
+function resolveActionSnapshot(action: DeviceAction, fallback?: string): DeviceAction {
+  if (!NODE_ACTION_TYPES.has(action.type)) return action;
+  const withSnapshot = action as DeviceAction & { snapshotId?: string };
+  const snapshotId = withSnapshot.snapshotId ?? fallback;
+  if (snapshotId === undefined) {
+    throw new Error(
+      `Action '${action.type}' needs the snapshotId of the observation its nodeId came from. ` +
+      "Put it inside the action object, e.g. " +
+      '{"action":{"type":"click_node","snapshotId":"snap_1","nodeId":"n2"}}.',
+    );
+  }
+  // The union's non-node members have no snapshotId, so the spread is widened
+  // past the discriminated shape; NODE_ACTION_TYPES already excluded them.
+  return { ...withSnapshot, snapshotId } as DeviceAction;
 }
 
 const DeviceTargetSchema = z.string().min(1).describe("The opaque deviceTarget bound to this run");
@@ -240,7 +277,7 @@ function nodeIdentity(node: RawSnapNode): string | null {
     node.text ?? "",
     node.contentDescription ?? "",
   ];
-  return parts.some((p) => p !== "") ? parts.join(" ") : null;
+  return parts.some((p) => p !== "") ? parts.join("\u0000") : null;
 }
 
 interface StaleRecovery {
@@ -273,7 +310,10 @@ async function reResolveStaleAction(
   action: DeviceAction,
 ): Promise<StaleRecovery | null> {
   if (!("snapshotId" in action)) return null;
+  // resolveActionSnapshot has already guaranteed this for every node action;
+  // the type stays optional only so a misplaced one can be recovered.
   const fromSnapshotId = action.snapshotId;
+  if (fromSnapshotId === undefined) return null;
 
   const fresh = rememberSnapshot(
     deviceId,
@@ -558,12 +598,17 @@ export function createAndroidToolServer(
         "re-targets the same node automatically, reporting staleSnapshotRecovery; you only see " +
         "stale_snapshot when that node is gone or ambiguous. " +
         "Returns status, screenChanged, and latency.",
-      inputSchema: { deviceTarget: DeviceTargetSchema, action: DeviceActionSchema },
+      inputSchema: {
+        deviceTarget: DeviceTargetSchema,
+        action: DeviceActionSchema,
+        snapshotId: SnapshotIdSchema,
+      },
     },
-    async ({ deviceTarget, action }) => {
-      assertNotConsequential(action);
+    async ({ deviceTarget, action, snapshotId }) => {
+      const resolved = resolveActionSnapshot(action, snapshotId);
+      assertNotConsequential(resolved);
       const deviceId = requireOnlineDevice(gateway, deviceTarget);
-      const { result, recovery } = await executeWithStaleRecovery(gateway, deviceId, action);
+      const { result, recovery } = await executeWithStaleRecovery(gateway, deviceId, resolved);
       return {
         content: [{
           type: "text",
@@ -593,15 +638,17 @@ export function createAndroidToolServer(
         deviceTarget: DeviceTargetSchema,
         intent: z.string().min(8).max(200),
         action: DeviceActionSchema,
+        snapshotId: SnapshotIdSchema,
       },
     },
     // `intent` is deliberately unused at execution time: it exists so the
     // approval surface can read clean display text off the tool-call arguments.
-    async ({ deviceTarget, action }) => {
+    async ({ deviceTarget, action, snapshotId }) => {
+      const resolved = resolveActionSnapshot(action, snapshotId);
       const deviceId = requireOnlineDevice(gateway, deviceTarget);
       const result = await gateway.sendRequest(deviceId, {
         type: "execute_action",
-        action,
+        action: resolved,
       });
       return { content: [{ type: "text", text: JSON.stringify(unwrap(result)) }] };
     },
@@ -622,14 +669,16 @@ export function createAndroidToolServer(
       inputSchema: {
         deviceTarget: DeviceTargetSchema,
         action: DeviceActionSchema,
+        snapshotId: SnapshotIdSchema,
         settleMs: z.number().int().min(0).max(3000).default(350),
       },
     },
-    async ({ deviceTarget, action, settleMs }) => {
-      assertNotConsequential(action);
+    async ({ deviceTarget, action, snapshotId, settleMs }) => {
+      const resolved = resolveActionSnapshot(action, snapshotId);
+      assertNotConsequential(resolved);
       const deviceId = requireOnlineDevice(gateway, deviceTarget);
       const { result: actionResult, recovery } =
-        await executeWithStaleRecovery(gateway, deviceId, action);
+        await executeWithStaleRecovery(gateway, deviceId, resolved);
       if (settleMs > 0) await new Promise((resolve) => setTimeout(resolve, settleMs));
       const raw = rememberSnapshot(
         deviceId,
@@ -863,12 +912,17 @@ export function createAndroidToolServer(
             "One question: which actionable UI target must be located, or (mode='verify') " +
               "which visual property must be confirmed, on the current screen?",
           ),
+        // Required rather than defaulted on purpose. A default made this the
+        // one field a caller could supply alone, and sub-agents twice called
+        // {mode:"locate"} with no question, spending a round trip on the
+        // rejection. It also stopped a verify-intent question from silently
+        // running as a locate.
         mode: z
           .enum(["locate", "verify"])
-          .default("locate")
           .describe(
-            "'locate' finds a UI target; 'verify' returns holds=yes|no|unclear for a visual " +
-              "property. 'unclear' is a real answer, not a failure - never treat it as a yes.",
+            "Required. 'locate' finds a UI target; 'verify' returns holds=yes|no|unclear for a " +
+              "visual property. 'unclear' is a real answer, not a failure - never treat it as " +
+              "a yes. Always send this together with `question`; neither is optional.",
           ),
         expectation: z
           .string()

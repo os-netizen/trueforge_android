@@ -16,7 +16,7 @@ import { trueForgeClient } from "./client.js";
 export const ANDROID_OPERATOR_INSTRUCTIONS = `You operate a physical Android phone through the connected device tools.
 
 Operating policy:
-1. Observe first with get_screen. For a specific target use find_nodes instead of requesting more tree data. find_nodes returns only nodes rendered on the current screen; its onScreen and offScreenOmitted counts tell you what you can act on now versus what merely exists in the page. Zero-area bounds pinned to a screen edge mean a node is scrolled out of view in a virtualized list, not that the tree is unreliable - it cannot be tapped, and no amount of re-querying will change that. Nodes are compact: {id,p,t,d,r:role,v:view id,f:flags,a:actions,rng:[min,max,current],b:bounds}. Responses are deliberately bounded to preserve context. Use only fields declared by each tool schema: inspect a schema once when uncertain, retain it, and never guess arguments, query syntax, nested actions, or unavailable host-control tools. A validation error is not a reason to improvise another shape.
+1. Observe first with get_screen. For a specific target use find_nodes instead of requesting more tree data. find_nodes returns only nodes rendered on the current screen; its onScreen and offScreenOmitted counts tell you what you can act on now versus what merely exists in the page. Zero-area bounds pinned to a screen edge mean a node is scrolled out of view in a virtualized list, not that the tree is unreliable - it cannot be tapped, and no amount of re-querying will change that. Nodes are compact: {id,p,t,d,r:role,v:view id,f:flags,a:actions,rng:[min,max,current],b:bounds}. Responses are deliberately bounded to preserve context. Every tool schema is already loaded in your context: read it there and never spend a turn discovering or re-fetching one. Use only fields those schemas declare, and never guess arguments, query syntax, nested actions, or unavailable host-control tools. Supply every required field on the first call - a default on one field does not make the others optional, and an action's snapshotId belongs inside the action object, not beside it. A validation error is not a reason to improvise another shape.
 2. Node ids are valid ONLY within the snapshot that produced them. Every node action must include the snapshotId from the observation that produced the id, and always the most recent one: get_screen, find_nodes, wait_for and execute_and_observe each replace the device's live snapshot, so pass the id from the last of those you called, never one from an earlier turn. execute_action and execute_and_observe recover from a replaced snapshot themselves - they re-observe and re-target the node you named, reporting staleSnapshotRecovery - so a returned stale_snapshot means the node is genuinely gone or ambiguous. Observe again and replan then; never re-send the identical call.
 3. Action hierarchy: prefer semantic node actions (click_node, set_text). For audio/video playback, use get_media_state and media_control; never guess player coordinates or infer playback by comparing UI timestamps. Use scroll, swipe, or tap_coordinates only when no semantic action applies. global_action covers back/home/recents/notifications. launch_app opens installed packages.
 4. Prefer execute_and_observe for navigation and wait_for for asynchronous UI; they avoid race-prone action/poll loops. An accepted action or screenChanged only proves delivery or a UI event, not success. After every action, verify the exact expected postcondition with the narrowest authoritative tool: the old target disappeared, the expected node/text/package appeared, or get_media_state confirms playback. Do not continue from an unverified assumption.
@@ -136,6 +136,15 @@ export async function ensureAgent(opts: EnsureAgentOptions): Promise<void> {
       {
         name: opts.mcpServerName,
         enableTools: ["@all"],
+        // Without this TrueForge defers tool schemas, so the agent burns a
+        // model turn expanding each one before first use - seven turns and
+        // roughly 100s on the 2026-08-30 Amazon runs, and it re-fetched
+        // schemas mid-run as deferred ones aged out of context. All twelve
+        // bridge tools together are ~5.3k tokens and are cache-read on every
+        // later turn, so loading them upfront is far cheaper than discovering
+        // them. Dynamic sub-agents inherit this, which is what stops the
+        // vision child spending its first two turns on discovery too.
+        preload: true,
         // Navigation stays ungated; only the consequential commit step pauses.
         requireApprovalForTools: ["commit_action"],
       },

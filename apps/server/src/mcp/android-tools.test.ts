@@ -467,3 +467,94 @@ test("a node clipped by the screen edge is still a usable target", async () => {
 
   assert.equal((JSON.parse(textOf(result)) as { onScreen: number }).onScreen, 1);
 });
+
+/**
+ * Both cost a wasted model turn on the 2026-08-30 runs: a snapshotId placed
+ * beside the action instead of inside it, and a vision call that sent only the
+ * defaulted `mode`. The first is now absorbed, the second made impossible.
+ */
+test("a snapshotId passed beside the action is folded into it", async () => {
+  // execute_and_observe also takes a post-action screen, so the gateway has to
+  // answer get_screen with a real snapshot rather than a bare action result.
+  const sent: RecordedRequest[] = [];
+  clearSnapshotCache();
+  const gateway: DeviceGatewayLike = {
+    listDevices: () => [{ deviceId: "tablet-1" }],
+    isOnline: () => true,
+    sendRequest: async (deviceId, request, opts) => {
+      sent.push({ deviceId, request, opts });
+      if (request.type === "get_screen") {
+        return { ok: true, result: snapshot("snap_265", [{ id: "n0", ...SCREEN }]) };
+      }
+      return { ok: true, result: { status: "success", screenChanged: true } };
+    },
+  };
+  const client = await connectedClient(gateway);
+  const result = await client.callTool({
+    name: "execute_and_observe",
+    arguments: {
+      deviceTarget: TABLET_TARGET,
+      action: { type: "click_node", nodeId: "n342" },
+      snapshotId: "snap_265",
+      settleMs: 0,
+    },
+  });
+
+  assert.notEqual(result.isError, true);
+  assert.deepEqual(sent[0]?.request.action, {
+    type: "click_node",
+    nodeId: "n342",
+    snapshotId: "snap_265",
+  });
+});
+
+test("the action's own snapshotId wins over the tool-level one", async () => {
+  const { gateway, sent } = fakeGateway({ status: "success" });
+  const client = await connectedClient(gateway);
+  await client.callTool({
+    name: "execute_action",
+    arguments: {
+      deviceTarget: TABLET_TARGET,
+      action: { type: "click_node", nodeId: "n1", snapshotId: "inner" },
+      snapshotId: "outer",
+    },
+  });
+
+  assert.equal((sent[0]?.request.action as { snapshotId: string }).snapshotId, "inner");
+});
+
+test("a node action with no snapshotId anywhere is refused with a usable message", async () => {
+  const { gateway, sent } = fakeGateway({ status: "success" });
+  const client = await connectedClient(gateway);
+  const result = await client.callTool({
+    name: "execute_action",
+    arguments: { deviceTarget: TABLET_TARGET, action: { type: "click_node", nodeId: "n1" } },
+  });
+
+  assert.equal(result.isError, true);
+  assert.match(textOf(result), /needs the snapshotId/);
+  assert.deepEqual(sent, []);
+});
+
+test("actions that never carry a snapshot are untouched", async () => {
+  const { gateway, sent } = fakeGateway({ status: "success" });
+  const client = await connectedClient(gateway);
+  const result = await client.callTool({
+    name: "execute_action",
+    arguments: { deviceTarget: TABLET_TARGET, action: { type: "global_action", action: "back" } },
+  });
+
+  assert.notEqual(result.isError, true);
+  assert.deepEqual(sent[0]?.request.action, { type: "global_action", action: "back" });
+});
+
+test("inspect_screen_visually requires both mode and question", async () => {
+  const { gateway } = fakeGateway({ status: "success" });
+  const client = await connectedClient(gateway);
+  const result = await client.callTool({
+    name: "inspect_screen_visually",
+    arguments: { deviceTarget: TABLET_TARGET, mode: "locate" },
+  });
+
+  assert.equal(result.isError, true);
+});

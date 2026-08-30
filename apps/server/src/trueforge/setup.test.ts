@@ -165,10 +165,19 @@ test("vision refuses unstable frames and duplicate localization", () => {
 test("tool calls use declared schemas without improvisation", () => {
   assert.match(
     ANDROID_OPERATOR_INSTRUCTIONS,
-    /Use only fields declared by each tool schema/,
+    /Use only fields those schemas declare/,
   );
   assert.match(
     ANDROID_OPERATOR_INSTRUCTIONS,
     /never guess arguments, query syntax, nested actions, or unavailable host-control tools/,
+  );
+  // Schemas are preloaded on the manifest, so discovery turns are pure waste.
+  assert.match(
+    ANDROID_OPERATOR_INSTRUCTIONS,
+    /already loaded in your context[\s\S]*never spend a turn discovering or re-fetching one/,
+  );
+  assert.match(
+    ANDROID_OPERATOR_INSTRUCTIONS,
+    /a default on one field does not make the others optional/,
   );
 });
