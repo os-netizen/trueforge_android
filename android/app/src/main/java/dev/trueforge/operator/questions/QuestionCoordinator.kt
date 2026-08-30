@@ -1,12 +1,13 @@
 package dev.trueforge.operator.questions
 
-import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
-import android.content.Intent
+import android.net.Uri
 import androidx.core.app.NotificationCompat
-import dev.trueforge.operator.MainActivity
+import androidx.core.app.RemoteInput
+import androidx.core.net.toUri
+import dev.trueforge.operator.interactions.AgentInteractionNotifications
 import dev.trueforge.operator.networking.DeviceRequest
 import dev.trueforge.operator.networking.UserQuestionResult
 import kotlinx.coroutines.CompletableDeferred
@@ -14,14 +15,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 
 /** Coordinates non-safety user questions separately from binary action approvals. */
 object QuestionCoordinator {
-    const val CHANNEL_ID = "operator_questions"
-    private const val NOTIFICATION_ID_BASE = 4600
-    private val nextNotificationId = AtomicInteger(NOTIFICATION_ID_BASE)
-
     data class PendingQuestion(
         val requestId: String,
         val toolCallId: String,
@@ -48,7 +44,7 @@ object QuestionCoordinator {
                     request.requestId,
                     request.toolCallId,
                     request.question,
-                    request.options.take(5),
+                    QuestionAnswers.options(request.options),
                     android.os.SystemClock.uptimeMillis() + request.timeoutMs,
                 )
             }
@@ -63,7 +59,7 @@ object QuestionCoordinator {
 
     fun resolve(context: Context, requestId: String, content: String?) {
         val waiter = waiters[requestId] ?: return
-        waiter.complete(content?.trim()?.takeIf { it.isNotEmpty() }?.let(::UserQuestionResult))
+        waiter.complete(QuestionAnswers.normalize(content)?.let(::UserQuestionResult))
         clear(context.applicationContext, requestId)
     }
 
@@ -77,35 +73,46 @@ object QuestionCoordinator {
 
     private fun postNotification(context: Context, request: DeviceRequest.RequestUserQuestion) {
         val manager = context.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL_ID,
-                "Agent questions",
-                NotificationManager.IMPORTANCE_HIGH,
-            ).apply { description = "Questions the agent needs you to answer before continuing" },
-        )
-        val notificationId = nextNotificationId.incrementAndGet()
+        val notificationId = AgentInteractionNotifications.nextId()
         notificationIds[request.requestId] = notificationId
-        val open = PendingIntent.getActivity(
+        val answerIntent = PendingIntent.getBroadcast(
             context,
             notificationId,
-            Intent(context, MainActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            android.content.Intent(context, QuestionAnswerReceiver::class.java).apply {
+                action = QuestionAnswerReceiver.ACTION_ANSWER
+                data = "trueforge://question/${Uri.encode(request.requestId)}".toUri()
+                setPackage(context.packageName)
+                putExtra(QuestionAnswerReceiver.EXTRA_REQUEST_ID, request.requestId)
+            },
+            // RemoteInput must be able to attach the reply bundle to this intent.
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
         )
+        val options = QuestionAnswers.options(request.options)
+        val remoteInput = RemoteInput.Builder(QuestionAnswerReceiver.REMOTE_INPUT_KEY)
+            .setLabel("Type your answer")
+            .setChoices(options.map { it as CharSequence }.toTypedArray())
+            .setAllowFreeFormInput(true)
+            .setEditChoicesBeforeSending(RemoteInput.EDIT_CHOICES_BEFORE_SENDING_DISABLED)
+            .build()
+        val answerAction = NotificationCompat.Action.Builder(
+            android.R.drawable.ic_menu_edit,
+            "Answer",
+            answerIntent,
+        )
+            .addRemoteInput(remoteInput)
+            .setAllowGeneratedReplies(false)
+            .build()
         manager.notify(
             notificationId,
-            NotificationCompat.Builder(context, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle("Agent needs your input")
-                .setContentText(request.question)
-                .setStyle(NotificationCompat.BigTextStyle().bigText(request.question))
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-                .setOngoing(true)
-                .setAutoCancel(false)
-                .setContentIntent(open)
-                .addAction(android.R.drawable.ic_menu_edit, "Answer", open)
+            AgentInteractionNotifications.builder(
+                context = context,
+                notificationId = notificationId,
+                title = "Agent needs your input",
+                body = request.question,
+                category = android.app.Notification.CATEGORY_MESSAGE,
+                smallIcon = android.R.drawable.ic_dialog_info,
+            )
+                .addAction(answerAction)
                 .build(),
         )
     }
