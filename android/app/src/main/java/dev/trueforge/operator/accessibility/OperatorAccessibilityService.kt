@@ -319,7 +319,7 @@ class OperatorAccessibilityService : AccessibilityService() {
             value = value,
             setText = ::performSetText,
             focus = ::focusTextTarget,
-            awaitFocused = ::awaitInputFocus,
+            awaitFocused = { awaitInputFocus(ref) },
         )
         return if (ok) successWithChange(started)
         else result(started, ActionStatus.FAILED, error = "Node did not accept text")
@@ -339,7 +339,7 @@ class OperatorAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun focusTextTarget(node: AccessibilityNodeInfo) {
+    private suspend fun focusTextTarget(node: AccessibilityNodeInfo) {
         try {
             node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
             if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return
@@ -349,26 +349,49 @@ class OperatorAccessibilityService : AccessibilityService() {
         val rect = Rect().also { node.getBoundsInScreen(it) }
         if (rect.isEmpty) return
         val path = Path().apply { moveTo(rect.exactCenterX(), rect.exactCenterY()) }
-        dispatchGesture(
+        val completed = CompletableDeferred<Unit>()
+        val dispatched = dispatchGesture(
             GestureDescription.Builder()
                 .addStroke(GestureDescription.StrokeDescription(path, 0, 60L))
                 .build(),
-            null,
+            object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    completed.complete(Unit)
+                }
+
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    completed.complete(Unit)
+                }
+            },
             null,
         )
+        if (dispatched) withTimeoutOrNull(800) { completed.await() }
     }
 
-    private suspend fun awaitInputFocus(): AccessibilityNodeInfo? {
+    private suspend fun awaitInputFocus(target: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val targetBounds = Rect().also { target.getBoundsInScreen(it) }
+        if (targetBounds.isEmpty) return null
         repeat(5) {
             val focused = try {
                 rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
             } catch (_: IllegalStateException) {
                 null
             }
-            if (focused != null) return focused
+            if (focused != null && focusedTextTargetMatches(focused, targetBounds)) return focused
             kotlinx.coroutines.delay(100)
         }
         return null
+    }
+
+    private fun focusedTextTargetMatches(node: AccessibilityNodeInfo, targetBounds: Rect): Boolean {
+        val acceptsText = node.isEditable || node.actionList.any {
+            it.id == AccessibilityNodeInfo.ACTION_SET_TEXT
+        }
+        if (!acceptsText) return false
+        val focusedBounds = Rect().also { node.getBoundsInScreen(it) }
+        if (focusedBounds.isEmpty || !Rect.intersects(focusedBounds, targetBounds)) return false
+        return targetBounds.contains(focusedBounds.centerX(), focusedBounds.centerY()) ||
+            focusedBounds.contains(targetBounds.centerX(), targetBounds.centerY())
     }
 
     suspend fun setText(nodeId: String, value: String): ActionResult =

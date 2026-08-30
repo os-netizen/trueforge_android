@@ -9,7 +9,7 @@ internal suspend fun <Node> setTextWithFocusedFallback(
     target: Node,
     value: String,
     setText: (Node, String) -> Boolean,
-    focus: (Node) -> Unit,
+    focus: suspend (Node) -> Unit,
     awaitFocused: suspend () -> Node?,
 ): Boolean {
     if (setText(target, value)) return true
