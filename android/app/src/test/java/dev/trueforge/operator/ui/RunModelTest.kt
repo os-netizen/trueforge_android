@@ -110,3 +110,46 @@ class RunModelTest {
         assertTrue(state.steps.isEmpty())
     }
 }
+
+/**
+ * "New task" is the only way out of a session, so its visibility has to track
+ * whether a session exists — not merely whether anything is drawn.
+ */
+class NewTaskVisibilityTest {
+
+    @Test
+    fun `a fresh screen offers nothing to reset`() {
+        assertFalse(TaskUiState().canStartNewTask)
+        assertFalse(TaskUiState().hasRunSurface)
+    }
+
+    @Test
+    fun `a run in flight is stopped, not reset`() {
+        val running = TaskUiState(runActive = true, runId = "r1")
+
+        assertTrue(running.hasRunSurface)
+        assertFalse(running.canStartNewTask)
+    }
+
+    @Test
+    fun `a dismissed result still offers the way out of its session`() {
+        // Exactly the state the result cross leaves behind if the timeline is
+        // gone too: nothing on screen, but the next send would continue r1.
+        val dismissed = TaskUiState(runId = "r1")
+
+        assertFalse(dismissed.hasRunSurface)
+        assertTrue(dismissed.canStartNewTask)
+    }
+
+    @Test
+    fun `a finished run offers both`() {
+        val finished = TaskUiState(
+            runId = "r1",
+            output = "Sent.",
+            steps = listOf(RunStep("a", RunStep.Kind.Tool, "Read the screen", "get_screen")),
+        )
+
+        assertTrue(finished.hasRunSurface)
+        assertTrue(finished.canStartNewTask)
+    }
+}

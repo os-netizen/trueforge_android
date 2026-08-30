@@ -18,7 +18,7 @@ data class RunStep(
     val toolName: String? = null,
     val detail: String? = null,
 ) {
-    enum class Kind { Tool, Approval, Question, Failure }
+    enum class Kind { Prompt, Tool, Approval, Question, Failure }
 }
 
 /**
@@ -122,5 +122,19 @@ fun TaskUiState.applying(event: RunEvent): TaskUiState {
         runActive = if (event.isTerminal) false else runActive,
     )
 }
+
+/** Whether the middle of Home shows a run rather than the microphone hero. */
+val TaskUiState.hasRunSurface: Boolean
+    get() = runActive || steps.isNotEmpty() || output != null || error != null
+
+/**
+ * Whether "New task" has anything to do.
+ *
+ * Deliberately not the same as [hasRunSurface]: dismissing a result empties
+ * the screen but leaves the session continuable, and a held [runId] with
+ * nothing drawn is exactly when the reset is hardest to find and most needed.
+ */
+val TaskUiState.canStartNewTask: Boolean
+    get() = !runActive && (hasRunSurface || runId != null)
 
 private const val MAX_STEPS = 40

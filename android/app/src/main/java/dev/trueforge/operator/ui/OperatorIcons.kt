@@ -99,6 +99,17 @@ object OperatorIcons {
         }
     }
 
+    val Plus: ImageVector by lazy {
+        icon("Plus") {
+            stroke(width = 2.4f) {
+                moveTo(12f, 5f)
+                verticalLineTo(19f)
+                moveTo(5f, 12f)
+                horizontalLineTo(19f)
+            }
+        }
+    }
+
     val Close: ImageVector by lazy {
         icon("Close") {
             stroke(width = 2f) {

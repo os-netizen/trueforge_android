@@ -89,6 +89,22 @@ class TaskRunClient(
             return "$scheme://$authority"
         }
 
+        /**
+         * The run request body. `runId` is present only when continuing, and
+         * its absence is what tells the server to open a fresh session.
+         */
+        internal fun requestBody(prompt: String, deviceId: String, runId: String?): String =
+            json.encodeToString(
+                JsonObject.serializer(),
+                JsonObject(
+                    buildMap {
+                        put("prompt", JsonPrimitive(prompt))
+                        put("deviceId", JsonPrimitive(deviceId))
+                        if (runId != null) put("runId", JsonPrimitive(runId))
+                    },
+                ),
+            )
+
         private fun JsonObject.string(key: String): String? =
             (this[key] as? JsonPrimitive)?.contentOrNull
 
@@ -359,18 +375,18 @@ class TaskRunClient(
         .callTimeout(0, TimeUnit.SECONDS)
         .build()
 
-    fun start(prompt: String): Flow<RunEvent> = flow {
+    /**
+     * Starts a run, or — when [runId] is given — adds a turn to the session
+     * that run already owns, so the agent keeps everything it just observed on
+     * the device instead of waking up on a blank slate.
+     */
+    fun start(prompt: String, runId: String? = null): Flow<RunEvent> = flow {
         // One reader per run: tool-call fragments are only meaningful within
         // the run that produced them.
         val reader = EnvelopeReader()
         val base = baseHttpUrl(serverUrlProvider())
-        val body = json.encodeToString(
-            JsonObject.serializer(),
-            JsonObject(mapOf(
-                "prompt" to JsonPrimitive(prompt),
-                "deviceId" to JsonPrimitive(deviceIdProvider()),
-            )),
-        ).toRequestBody(JSON_MEDIA_TYPE)
+        val body = requestBody(prompt, deviceIdProvider(), runId)
+            .toRequestBody(JSON_MEDIA_TYPE)
         val request = Request.Builder()
             .url("$base/api/dashboard/runs")
             .post(body)
