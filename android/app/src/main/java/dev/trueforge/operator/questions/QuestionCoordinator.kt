@@ -57,10 +57,12 @@ object QuestionCoordinator {
         }
     }
 
-    fun resolve(context: Context, requestId: String, content: String?) {
-        val waiter = waiters[requestId] ?: return
+    /** Returns false when the request belonged to a previous, now-dead app process. */
+    fun resolve(context: Context, requestId: String, content: String?): Boolean {
+        val waiter = waiters[requestId] ?: return false
         waiter.complete(QuestionAnswers.normalize(content)?.let(::UserQuestionResult))
         clear(context.applicationContext, requestId)
+        return true
     }
 
     private fun clear(appContext: Context, requestId: String) {
@@ -83,6 +85,7 @@ object QuestionCoordinator {
                 data = "trueforge://question/${Uri.encode(request.requestId)}".toUri()
                 setPackage(context.packageName)
                 putExtra(QuestionAnswerReceiver.EXTRA_REQUEST_ID, request.requestId)
+                putExtra(QuestionAnswerReceiver.EXTRA_NOTIFICATION_ID, notificationId)
             },
             // RemoteInput must be able to attach the reply bundle to this intent.
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,

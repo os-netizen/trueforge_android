@@ -56,4 +56,21 @@ object AgentInteractionNotifications {
             .setOngoing(true)
             .setContentIntent(openOperator)
     }
+
+    /** Replaces an orphaned direct-reply prompt with an honest delivery failure. */
+    fun showReplyDeliveryFailure(context: Context, notificationId: Int) {
+        val notification = builder(
+            context = context,
+            notificationId = notificationId,
+            title = "Answer not delivered",
+            body = "The agent connection restarted. Open Operator and retry the run.",
+            category = android.app.Notification.CATEGORY_ERROR,
+            smallIcon = android.R.drawable.ic_dialog_alert,
+        )
+            .setOngoing(false)
+            .setAutoCancel(true)
+            .build()
+        context.getSystemService(NotificationManager::class.java)
+            .notify(notificationId, notification)
+    }
 }
