@@ -128,6 +128,13 @@ export async function runTurnLoopWithApprovals(
         turnError = event.state.message || "TrueForge turn failed";
         continue;
       }
+      if (event.state.status === "cancelled") {
+        turnStatus = "error";
+        turnError = event.state.reason
+          ? `TrueForge turn cancelled: ${event.state.reason}`
+          : "TrueForge turn cancelled";
+        continue;
+      }
       if (event.state.status === "done") {
         turnStatus = "done";
         const allRequired = event.state.requiredActions ?? [];

@@ -44,6 +44,17 @@ test("vision sub-agents observe and report but never actuate", () => {
   );
 });
 
+test("vision sub-agents receive the exact run-bound device target", () => {
+  assert.match(
+    ANDROID_OPERATOR_INSTRUCTIONS,
+    /does not automatically inherit the run routing context/,
+  );
+  assert.match(
+    ANDROID_OPERATOR_INSTRUCTIONS,
+    /copy the exact opaque deviceTarget from the current run into its input/,
+  );
+});
+
 test("Code Mode cannot bypass visual isolation", () => {
   assert.match(
     ANDROID_OPERATOR_INSTRUCTIONS,
