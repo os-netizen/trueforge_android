@@ -141,22 +141,20 @@ class MainActivity : ComponentActivity() {
     private fun startNewTask() {
         if (task.runActive) return
         voice.stop()
+        task = task.copy(statusLine = "", steps = emptyList(), startedAtMs = null)
         clearRunSurface()
         // Dropping the run id is what makes the next send a *new* session
         // rather than another turn on the finished one.
         task = task.copy(prompt = "", runId = null, micError = null, micListening = false)
     }
 
-    /** Dismisses the finished run's result; the session stays continuable. */
+    /**
+     * Dismisses the finished run's answer. The timeline and the session stay:
+     * the cross means "I have read this", and "New task" is what ends things.
+     */
     private fun clearRunSurface() {
         if (task.runActive) return
-        task = task.copy(
-            statusLine = "",
-            steps = emptyList(),
-            output = null,
-            error = null,
-            startedAtMs = null,
-        )
+        task = task.copy(output = null, error = null)
     }
 
     // --- Task entry -------------------------------------------------------

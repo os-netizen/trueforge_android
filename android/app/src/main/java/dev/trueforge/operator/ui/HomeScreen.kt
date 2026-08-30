@@ -80,10 +80,7 @@ fun HomeScreen(
     onClearResult: () -> Unit,
     onNewTask: () -> Unit,
 ) {
-    val hasRunSurface = task.runActive ||
-        task.steps.isNotEmpty() ||
-        task.output != null ||
-        task.error != null
+    val hasRunSurface = task.hasRunSurface
 
     Column(
         modifier = Modifier
@@ -114,7 +111,7 @@ fun HomeScreen(
             // this corner would compete with Stop, which is the real answer
             // to "I want out of this".
             AnimatedVisibility(
-                visible = hasRunSurface && !task.runActive,
+                visible = task.canStartNewTask,
                 enter = fadeIn(),
                 exit = fadeOut(),
             ) {
