@@ -60,4 +60,16 @@ test("Code Mode cannot bypass visual isolation", () => {
     ANDROID_OPERATOR_INSTRUCTIONS,
     /Do not call inspect_screen_visually or capture_screenshot from Code Mode/,
   );
+  assert.match(
+    ANDROID_OPERATOR_INSTRUCTIONS,
+    /after the first read-only discovery, classify every requested bulk operation/,
+  );
+  assert.match(
+    ANDROID_OPERATOR_INSTRUCTIONS,
+    /If the app exposes one genuine native bulk control, use that direct action/,
+  );
+  assert.match(
+    ANDROID_OPERATOR_INSTRUCTIONS,
+    /switch to Code Mode before mutating the first target: never begin a direct per-item loop and switch to a script later/,
+  );
 });
